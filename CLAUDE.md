@@ -4,22 +4,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a documentation-first repository for a desktop AI coding workbench (桌面版 AI Coding 应用). The project is currently in Phase 0 (planning/architecture) with implementation planned across a 12-week milestone schedule.
+This is a desktop AI coding workbench (桌面版 AI Coding 应用). The project is currently in Phase 0 (foundation) with implementation planned across a 12-week milestone schedule.
+
+**Current Status:** PR-01 (Monorepo baseline) implemented - see branch `feat/pr-01-monorepo-baseline`
 
 **Key Documents:**
 - `docs/PROJECT_DESIGN_FINAL.md`: Source of truth for product scope, architecture, and milestones
 - `docs/pr-implementation-plan.md`: PR-sliced implementation plan with 18 sequenced PRs
 - `AGENTS.md`: General contributor guidelines
 
-## Planned Architecture
+## Monorepo Structure
 
-**Monorepo Structure (to be implemented):**
-- `apps/desktop`: Electron + React + TypeScript + Vite
-- `packages/agent-core`: Task state machine, session orchestration
-- `packages/runtime-adapters/claude`: Claude Code SDK adapter
-- `packages/toolkit`: Tool execution layer (file, terminal, git)
-- `packages/policy-engine`: Permission rules and approval workflows
-- `packages/storage`: SQLite + Drizzle ORM for persistence
+```
+.
+├── apps/
+│   └── desktop/          # Electron + React + TypeScript + Vite
+├── packages/
+│   ├── agent-core/       # Task state machine, session orchestration
+│   ├── toolkit/          # Tool execution layer (file, terminal, git)
+│   ├── policy-engine/    # Permission rules and approval workflows
+│   ├── storage/          # SQLite + Drizzle ORM for persistence
+│   └── runtime-adapters/
+│       └── claude/       # Claude SDK adapter
+└── docs/                 # Project documentation
+```
 
 **Key Technical Decisions:**
 - Single Runtime Provider: Claude Code SDK only (no Codex/other providers in MVP)
@@ -28,26 +36,55 @@ This is a documentation-first repository for a desktop AI coding workbench (桌�
 
 ## Development Commands
 
-**Current State (Documentation Only):**
-No build/test pipeline is configured yet. For documentation contributions:
+**Prerequisites:**
+- Node.js >= 22.0.0
+- pnpm 10.5.0+ (matching `packageManager` field)
 
+**Setup:**
 ```bash
-# Review documentation
-ls docs/
-sed -n '1,120p' docs/PROJECT_DESIGN_FINAL.md
-
-# Find TODOs/FIXMEs
-rg "TODO|FIXME" docs
+# Install dependencies
+pnpm install
 ```
 
-**Future Commands (when code is added):**
-Root-level scripts will be added for:
-- `dev`: Start desktop app in development mode
-- `build`: Build all packages
-- `test`: Run unit and integration tests
-- `lint`: Run ESLint and Prettier
+**Development:**
+```bash
+# Start desktop app in development mode
+pnpm dev
 
-Update this section when PR-01 (Monorepo baseline) is merged.
+# Build all packages
+pnpm build
+
+# Run tests
+pnpm test
+
+# Run linting
+pnpm lint
+
+# Type check
+pnpm typecheck
+
+# Clean build outputs
+pnpm clean
+```
+
+**Package-specific commands:**
+```bash
+# Build specific package
+pnpm --filter @lynae/desktop build
+pnpm --filter @lynae/agent-core build
+
+# Dev mode for specific package
+pnpm --filter @lynae/agent-core dev
+```
+
+**Workspace verification:**
+```bash
+# List all workspace packages
+pnpm recursive list --depth=0
+
+# Check workspace graph
+pnpm nx graph
+```
 
 ## Implementation Roadmap
 

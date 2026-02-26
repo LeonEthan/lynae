@@ -39,3 +39,13 @@ venv/
 .cache/
 .tmp/
 tmp/
+
+# Turbo
+.turbo/
+
+# Electron
+out/
+release/
+
+# pnpm
+.pnpm-store/
