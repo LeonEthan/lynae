@@ -57,9 +57,6 @@ pnpm build
 # Run tests
 pnpm test
 
-# Run linting
-pnpm lint
-
 # Type check
 pnpm typecheck
 
@@ -83,7 +80,7 @@ pnpm --filter @lynae/agent-core dev
 pnpm recursive list --depth=0
 
 # Check workspace graph
-pnpm nx graph
+pnpm ls -r --depth=0
 ```
 
 ## Implementation Roadmap

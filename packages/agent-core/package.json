@@ -14,9 +14,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "node ../../scripts/clean.mjs dist"
   },
   "devDependencies": {
     "typescript": "~5.7.3"

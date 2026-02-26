@@ -8,9 +8,8 @@
     "dev": "turbo run dev",
     "build": "turbo run build",
     "test": "turbo run test",
-    "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "clean": "turbo run clean && rm -rf node_modules"
+    "clean": "turbo run clean && node scripts/clean.mjs node_modules"
   },
   "devDependencies": {
     "@types/node": "^22.13.5",

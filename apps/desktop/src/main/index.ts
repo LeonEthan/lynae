@@ -1,7 +1,8 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const __dirname = path.dirname(new URL(import.meta.url).pathname)
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -30,6 +31,9 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // IPC handlers (placeholder for PR-03 expansion)
+  ipcMain.handle('ping', () => 'pong')
+
   createWindow()
 
   app.on('activate', () => {
