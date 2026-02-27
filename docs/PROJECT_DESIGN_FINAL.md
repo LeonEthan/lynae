@@ -10,9 +10,9 @@
 - 支持在本地安全环境中完成从需求到代码落地的闭环。
 
 ### 1.2 运行时策略（本期确定）
-- 本期仅接入 `Claude Code SDK`（统一使用 Claude Runtime）。
+- 本期仅接入 `Claude Agent SDK`（`@anthropic-ai/claude-agent-sdk`，统一使用 Claude Runtime）。
 - 暂不接入 Codex 或其他 Runtime Provider。
-- 上层仍保留 Runtime 抽象接口，避免后续扩展时重构核心流程。
+- 上层保留 Runtime 抽象接口，但采用“薄适配层”策略，避免重复实现 Agent Runtime 核心能力。
 
 ### 1.3 MVP 边界（第一阶段）
 - 单用户本地桌面版（macOS/Windows，Linux 后置）。
@@ -71,14 +71,14 @@
 - 桌面壳层：`Electron`（优先）。
 - 前端：`React + TypeScript + Vite`。
 - Agent Core：Node.js/TypeScript（任务状态机、会话编排、工具调度）。
-- Runtime Adapter：`claude-adapter`（封装 Claude Code SDK）。
+- Runtime Adapter：`claude-adapter`（薄适配层，封装 Claude Agent SDK）。
 - Tool Runner：shell/file/git/browser 等工具统一执行层。
 - 数据层：`SQLite + Drizzle ORM`（会话、审计、配置）。
 
 ### 4.2 分层结构
 - `apps/desktop`：UI + IPC。
 - `packages/agent-core`：Planner、执行状态机、事件总线。
-- `packages/runtime-adapters/claude`：Claude SDK 适配层。
+- `packages/runtime-adapters/claude`：Claude Agent SDK 薄适配层（事件映射/错误归一化）。
 - `packages/toolkit`：工具统一接口、审批守卫、超时/重试。
 - `packages/policy-engine`：权限规则、风险分级、审批策略。
 - `packages/storage`：Schema、迁移、审计查询。
@@ -97,7 +97,19 @@ interface AgentRuntime {
 设计要点：
 - 上层统一消费 `RuntimeEvent`（文本、工具调用、diff、日志、错误）。
 - Provider 差异封装在 `claude-adapter` 内部。
-- 禁止在 UI 或业务层直接调用 Claude SDK。
+- `claude-adapter` 仅负责 SDK 启动、事件映射、错误归一化，不承载复杂业务编排。
+- 禁止在 UI 或业务层直接调用 `@anthropic-ai/claude-agent-sdk` 或 `@anthropic-ai/sdk`。
+
+### 4.4 SDK 选型约束（纠偏）
+- 运行时编排（会话、turn、工具调用、流式事件）统一使用 `@anthropic-ai/claude-agent-sdk`。
+- `@anthropic-ai/sdk` 是底层模型 API 客户端，不作为本项目 Agent Runtime 实现。
+- MVP 的 Runtime 路径禁止引入 `@anthropic-ai/sdk`，避免把“LLM 调用层”误用为“Agent 执行层”。
+
+### 4.5 职责边界（避免过度与重复设计）
+- 由 Agent SDK 负责：Agent loop、会话上下文管理、工具调用循环、流式协议细节。
+- 由本项目负责：Plan/Execute 状态机、审批流、策略引擎、审计落库、工作区安全边界。
+- 不在 `claude-adapter` 重复实现：对话历史管理器、手写 tool loop、底层流事件拼装解析器。
+- 如需 Provider 扩展，仅新增同等“薄适配层”，禁止复制一套新的 Runtime 内核。
 
 ## 5. 安全与风控（必须）
 
@@ -154,14 +166,15 @@ interface AgentRuntime {
 - 文档完善与 Beta 反馈闭环。
 
 ## 8. 风险与对策
-- Claude SDK 行为变更：通过适配层隔离 + 契约测试兜底。
+- Claude Agent SDK 行为变更：通过适配层隔离 + 契约测试兜底。
+- 适配层变厚导致维护成本上升：保持“薄适配”边界，新增逻辑优先放在 `agent-core/policy/toolkit`。
 - 权限策略过松：默认 deny + 高危动作强制确认。
 - 桌面环境差异（OS/终端）：增加环境探测与预检报告。
 - 成本与时延波动：token/时长预算、任务硬超时、并发上限。
 
 ## 9. 推荐技术栈（MVP）
 - 桌面：Electron + React + TypeScript + Vite。
-- Runtime：Claude Code SDK（唯一 Provider）。
+- Runtime：Claude Agent SDK（`@anthropic-ai/claude-agent-sdk`，唯一 Provider）。
 - 数据：SQLite（better-sqlite3）+ Drizzle ORM。
 - 执行：node-pty（终端工具）、Playwright（后续 P1）。
 - 观测：OpenTelemetry（可选接 Langfuse）。
@@ -175,6 +188,6 @@ interface AgentRuntime {
 - Beta 阶段严重崩溃率：持续下降并可定位根因。
 
 ## 11. 结论
-- 本版最终方案采用“Claude SDK 单 Runtime + 本地优先 + 安全先行”的策略。
+- 本版最终方案采用“Claude Agent SDK 单 Runtime + 本地优先 + 安全先行”的策略。
 - 目标是在 12 周内交付可用 Beta，并验证核心闭环与安全基线。
 - Codex 及其他 Runtime 在本期明确不纳入范围，后续按业务验证结果再评估。

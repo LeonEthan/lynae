@@ -6,12 +6,13 @@
 ## 1. 目标
 - 将 12 周里程碑落地为可连续合并的 PR 序列。
 - 每个 PR 保持单一目标、可验证、可回滚。
-- 严格对齐 MVP 范围：`Claude Runtime` 单 Provider、本地优先、安全先行。
+- 严格对齐 MVP 范围：`Claude Agent SDK` 单 Provider、本地优先、安全先行。
 
 ## 2. 切分原则
 - 先基础设施，后能力闭环，再稳定性与发布。
 - 每个 PR 必须包含：变更说明、验证方式、风险点与回滚方式。
 - 接口先行：跨包能力先定义契约，再接具体实现。
+- Runtime 侧坚持“薄适配层”：优先复用 Agent SDK 原生能力，不重复造 Runtime 内核。
 - 高风险能力（命令执行、文件写入、网络放行）默认 `deny`，审批后放行。
 
 ## 3. 分支与合并策略
@@ -92,12 +93,16 @@
 ### PR-06：Claude Adapter 接入（单 Runtime）
 - 范围：
   - 实现 `AgentRuntime` 接口（`createSession/runTurn/cancel/listCapabilities`）
-  - 封装 Claude SDK，屏蔽 Provider 差异
+  - 封装 Claude Agent SDK（`@anthropic-ai/claude-agent-sdk`），屏蔽 Provider 差异
+  - 仅实现 SDK 启动、事件映射、错误归一化，不承载复杂业务编排
 - 产出：
-  - 可流式返回文本与工具调用事件
+  - 可流式返回文本与工具调用事件（统一为 `RuntimeEvent`）
   - 运行时能力声明（capabilities）
 - 验收标准：
-  - 业务层不直接依赖 Claude SDK
+  - 业务层不直接依赖 `@anthropic-ai/claude-agent-sdk` 或 `@anthropic-ai/sdk`
+  - Runtime 路径不引入 `@anthropic-ai/sdk`
+  - `claude-adapter` 不重复实现会话历史管理、手写 tool loop、底层流事件拼装解析
+  - Plan/Execute、审批、策略、审计逻辑不下沉到 runtime-adapter
   - 最小对话可端到端通
 - 依赖：PR-05
 
@@ -258,7 +263,8 @@
 ## 6. 风险控制与回滚策略（按 PR 执行）
 - 每个 PR 必须附回滚说明：数据库迁移回滚、特性开关、接口兼容策略。
 - 安全相关 PR（07/08/10/14）必须包含未授权拦截测试。
-- Runtime 适配 PR（06）必须包含契约测试，避免 SDK 升级破坏上层。
+- Runtime 适配 PR（06）必须包含契约测试，避免 Agent SDK 升级破坏上层。
+- Runtime 相关 PR 需附“边界检查”：新增逻辑默认放在 `agent-core/policy/toolkit`，防止适配层变厚。
 
 ## 7. 完成定义（DoD）
 - 功能可用：满足该 PR 验收标准。
