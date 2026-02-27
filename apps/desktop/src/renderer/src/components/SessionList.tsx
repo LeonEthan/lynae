@@ -28,49 +28,41 @@ export function SessionList({
         </button>
       </div>
 
-      <div className="session-items">
+      <ul className="session-items" role="listbox" aria-label="Sessions">
         {sessions.length === 0 ? (
-          <div className="empty-state">No sessions yet</div>
+          <li className="empty-state">No sessions yet</li>
         ) : (
           sessions.map((session) => (
-            <button
+            <li
               key={session.id}
               className={`session-item ${session.id === activeSessionId ? 'active' : ''}`}
-              onClick={() => onSelectSession(session.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  onSelectSession(session.id)
-                }
-              }}
-              aria-pressed={session.id === activeSessionId}
+              role="option"
+              aria-selected={session.id === activeSessionId}
             >
-              <div className="session-info">
-                <div className="session-name">{session.name}</div>
-                <div className="session-time">
-                  {new Date(session.updatedAt).toLocaleDateString()}
+              <button
+                className="session-content"
+                onClick={() => onSelectSession(session.id)}
+                aria-label={`Select session ${session.name}`}
+              >
+                <div className="session-info">
+                  <div className="session-name">{session.name}</div>
+                  <div className="session-time">
+                    {new Date(session.updatedAt).toLocaleDateString()}
+                  </div>
                 </div>
-              </div>
+              </button>
               <button
                 className="delete-btn"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onDeleteSession(session.id)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.stopPropagation()
-                  }
-                }}
+                onClick={() => onDeleteSession(session.id)}
                 title="Delete session"
                 aria-label={`Delete session ${session.name}`}
               >
                 ×
               </button>
-            </button>
+            </li>
           ))
         )}
-      </div>
+      </ul>
     </div>
   )
 }
