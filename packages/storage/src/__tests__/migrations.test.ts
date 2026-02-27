@@ -1,6 +1,6 @@
 // Tests for drizzle-kit migration application (not fallback schema)
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import Database from 'better-sqlite3';
@@ -82,9 +82,7 @@ describe('Migrations', () => {
 
       // Verify the migration file exists
       const migrationFile = join(migrationsDir, '0000_initial.sql');
-      expect(
-        require('fs').existsSync(migrationFile)
-      ).toBe(true);
+      expect(existsSync(migrationFile)).toBe(true);
 
       // Create storage with the migrations folder
       const storage = await Storage.create({
@@ -159,21 +157,97 @@ describe('Migrations', () => {
   });
 
   describe('migration path resolution', () => {
-    it('should resolve migrations relative to package when no folder specified', async () => {
-      // This test verifies the default path resolution
-      // The default should be packages/storage/drizzle (relative to src/db.ts)
-      const storage = await Storage.create({
-        databasePath: dbPath,
-        // migrationsFolder not specified - should use default
-      });
+    it('should resolve default migrations path to packages/storage/drizzle', async () => {
+      // This test verifies the default path is correct by:
+      // 1. Creating a migrations folder at packages/storage/drizzle
+      // 2. Verifying migrations are applied from that location
 
-      expect(storage.isInitialized()).toBe(true);
+      // The default path is relative to src/db.ts location:
+      // __dirname = packages/storage/src
+      // join(__dirname, '..', 'drizzle') = packages/storage/drizzle
+      const defaultMigrationsDir = join(process.cwd(), 'drizzle');
 
-      // Since we don't have a real drizzle folder in tests,
-      // it should fall back to direct schema application
-      expect(storage.isDatabaseReady()).toBe(true);
+      // Clean up any existing drizzle folder from previous test runs
+      try {
+        rmSync(defaultMigrationsDir, { recursive: true, force: true });
+      } catch {
+        // Ignore
+      }
 
-      await storage.close();
+      // Create migrations folder at the default location
+      mkdirSync(defaultMigrationsDir, { recursive: true });
+
+      // Create a marker migration file (drizzle-kit format with statement-breakpoint)
+      // Include core schema tables so other tests don't break
+      const markerFile = join(defaultMigrationsDir, '0000_test_marker.sql');
+      writeFileSync(
+        markerFile,
+        `CREATE TABLE IF NOT EXISTS "default_path_test_marker" (
+	"id"	text PRIMARY KEY NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "sessions" (
+	"id"	text PRIMARY KEY NOT NULL,
+	"title"	text NOT NULL,
+	"workspace_path"	text,
+	"model"	text,
+	"status"	text DEFAULT 'active' NOT NULL,
+	"created_at"	integer NOT NULL,
+	"updated_at"	integer NOT NULL
+);
+--> statement-breakpoint
+INSERT INTO "default_path_test_marker" ("id") VALUES ('from-default-path');
+`
+      );
+
+      // Create journal file
+      const metaDir = join(defaultMigrationsDir, 'meta');
+      mkdirSync(metaDir, { recursive: true });
+      writeFileSync(
+        join(metaDir, '_journal.json'),
+        JSON.stringify({
+          version: '6',
+          dialect: 'sqlite',
+          entries: [
+            {
+              idx: 0,
+              version: '0',
+              when: Date.now(),
+              tag: '0000_test_marker',
+              breakpoints: true,
+            },
+          ],
+        })
+      );
+
+      try {
+        // Create storage WITHOUT specifying migrationsFolder
+        // It should find and apply migrations from packages/storage/drizzle
+        const storage = await Storage.create({
+          databasePath: dbPath,
+          // migrationsFolder not specified - uses default
+        });
+
+        expect(storage.isInitialized()).toBe(true);
+
+        // Verify the migration was applied from the default location
+        const connection = storage.getConnection();
+        const marker = connection.sqlite
+          .prepare("SELECT id FROM default_path_test_marker")
+          .get() as { id: string } | undefined;
+
+        // This proves the default path resolved correctly
+        expect(marker?.id).toBe('from-default-path');
+
+        await storage.close();
+      } finally {
+        // Always clean up the drizzle folder
+        try {
+          rmSync(defaultMigrationsDir, { recursive: true, force: true });
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
     });
 
     it('should use custom migrations folder when provided', async () => {
