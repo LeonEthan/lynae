@@ -133,7 +133,8 @@ class ClaudeSession implements AgentSession {
   private client: Anthropic;
   private config: SessionConfig;
   private conversationHistory: ConversationMessage[] = [];
-  private abortController: AbortController | null = null;
+  /** Tracks the currently active request for cancellation */
+  private activeRequest: AbortController | null = null;
 
   constructor(
     id: string,
@@ -160,8 +161,12 @@ class ClaudeSession implements AgentSession {
   }
 
   async *sendMessage(message: string): AsyncGenerator<RuntimeEvent> {
+    // Cancel any existing request to prevent race conditions
+    this.activeRequest?.abort();
+
     // Create a new abort controller for this request
-    this.abortController = new AbortController();
+    const controller = new AbortController();
+    this.activeRequest = controller;
 
     try {
       // Add user message to history
@@ -193,7 +198,7 @@ class ClaudeSession implements AgentSession {
           tools,
         },
         {
-          signal: this.abortController.signal,
+          signal: controller.signal,
         }
       );
 
@@ -206,7 +211,7 @@ class ClaudeSession implements AgentSession {
       // The stream is an async iterable - iterate over it directly
       for await (const event of stream) {
         // Check if cancelled
-        if (this.abortController.signal.aborted) {
+        if (controller.signal.aborted) {
           throw new Error('Request cancelled');
         }
 
@@ -323,14 +328,20 @@ class ClaudeSession implements AgentSession {
 
       yield { type: 'done' };
     } finally {
-      this.abortController = null;
+      // Only clear if this is still the active request
+      // (prevents race conditions with new requests)
+      if (this.activeRequest === controller) {
+        this.activeRequest = null;
+      }
     }
   }
 
+  /**
+   * Cancel any in-progress streaming request.
+   * Safe to call even when no request is active.
+   */
   cancel(): void {
-    if (this.abortController) {
-      this.abortController.abort();
-    }
+    this.activeRequest?.abort();
   }
 
   /**

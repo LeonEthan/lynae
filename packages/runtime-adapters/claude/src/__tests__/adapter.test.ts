@@ -732,4 +732,106 @@ describe('ClaudeAdapter', () => {
       expect(lastCall[0].messages.length).toBeLessThanOrEqual(2);
     });
   });
+
+  describe('concurrent request handling', () => {
+    it('should create new abort controller for each request', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      // Track abort signals from both requests
+      const abortSignals: (AbortSignal | undefined)[] = [];
+
+      // Use mockImplementationOnce to ensure each call gets a fresh mock
+      mockMessages.stream
+        .mockImplementationOnce((params: unknown, options: { signal?: AbortSignal }) => {
+          abortSignals.push(options?.signal);
+          return createMockStream([
+            { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+            { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Response 1' } },
+            { type: 'content_block_stop', index: 0 },
+            { type: 'message_stop' },
+          ]);
+        })
+        .mockImplementationOnce((params: unknown, options: { signal?: AbortSignal }) => {
+          abortSignals.push(options?.signal);
+          return createMockStream([
+            { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+            { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Response 2' } },
+            { type: 'content_block_stop', index: 0 },
+            { type: 'message_stop' },
+          ]);
+        });
+
+      // Start first request and fully consume it
+      const generator1 = session.sendMessage('First message');
+      const events1: RuntimeEvent[] = [];
+      for await (const event of generator1) {
+        events1.push(event);
+      }
+
+      // Start second request and fully consume it
+      const generator2 = session.sendMessage('Second message');
+      const events2: RuntimeEvent[] = [];
+      for await (const event of generator2) {
+        events2.push(event);
+      }
+
+      // Verify both requests received different abort signals (proper isolation)
+      expect(abortSignals.length).toBe(2);
+      expect(abortSignals[0]).not.toBe(abortSignals[1]);
+
+      // Verify the first request completed (either normally or cancelled)
+      expect(events1.some((e) => e.type === 'done' || (isErrorEvent(e) && e.message.includes('cancelled')))).toBe(true);
+
+      // Second request should complete normally
+      expect(events2.some((e) => e.type === 'done')).toBe(true);
+    });
+
+    it('should handle rapid cancel and sendMessage calls', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      mockMessages.stream.mockImplementation(() => createMockStream([
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ]));
+
+      // Start a request
+      const generator = session.sendMessage('Message');
+
+      // Immediately cancel it
+      session.cancel();
+
+      // Then start another request
+      const generator2 = session.sendMessage('Another message');
+
+      // Collect events from first generator (should be cancelled or empty)
+      const events1: RuntimeEvent[] = [];
+      try {
+        for await (const event of generator) {
+          events1.push(event);
+        }
+      } catch {
+        // Expected
+      }
+
+      // Collect events from second generator (should complete)
+      const events2: RuntimeEvent[] = [];
+      for await (const event of generator2) {
+        events2.push(event);
+      }
+
+      // Second request should complete successfully
+      expect(events2.some((e) => isTextEvent(e) && e.content === 'Hello')).toBe(true);
+      expect(events2.some((e) => e.type === 'done')).toBe(true);
+    });
+  });
 });
