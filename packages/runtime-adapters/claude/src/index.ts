@@ -255,9 +255,14 @@ class ClaudeSession implements AgentSession {
                 name: currentToolUseBlock.name,
                 input,
               };
-            } catch {
-              // If JSON parsing fails, log warning and yield with empty input
-              console.warn(`[ClaudeSession] Failed to parse tool input JSON: ${accumulatedJson}`);
+            } catch (error) {
+              // If JSON parsing fails, log warning with details and yield with empty input
+              // This can happen if the model produces invalid JSON or the stream is interrupted
+              const errorMessage = error instanceof Error ? error.message : 'Unknown parse error';
+              console.warn(
+                `[ClaudeSession] Failed to parse tool input JSON for tool "${currentToolUseBlock.name}" (ID: ${currentToolUseBlock.id}): ${errorMessage}. ` +
+                `Raw JSON: "${accumulatedJson}". Falling back to empty input.`
+              );
               currentToolUseBlock.input = {};
               assistantContent.push(currentToolUseBlock);
               yield {
