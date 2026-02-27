@@ -40,6 +40,10 @@ export function switchSession(sessionId: string): void {
     throw new Error(`Session not found: ${sessionId}`)
   }
   activeSessionId = sessionId
+
+  // Update updatedAt so the active session appears first in the sorted list
+  const session = sessions.get(sessionId)!
+  session.updatedAt = Date.now()
 }
 
 export function deleteSession(sessionId: string): void {
