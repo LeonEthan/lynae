@@ -4,6 +4,7 @@ import type { Session, SessionListResponse, CreateSessionRequest } from '../type
 const sessions: Map<string, Session> = new Map()
 let activeSessionId: string | null = null
 let sessionCounter = 0
+let timestampCounter = 0
 
 function generateId(): string {
   return `session_${Date.now()}_${++sessionCounter}`
@@ -41,9 +42,11 @@ export function switchSession(sessionId: string): void {
   }
   activeSessionId = sessionId
 
-  // Update updatedAt so the active session appears first in the sorted list
+  // Update updatedAt with a micro-timestamp so the active session appears
+  // first in the sorted list. Using Date.now() + increment ensures deterministic
+  // ordering even when multiple operations happen in the same millisecond.
   const session = sessions.get(sessionId)!
-  session.updatedAt = Date.now()
+  session.updatedAt = Date.now() * 1000 + (++timestampCounter % 1000)
 }
 
 export function deleteSession(sessionId: string): void {
