@@ -46,6 +46,7 @@ export interface PlanStep {
   dependencies: string[];
   status: StepStatus;
   order: number;
+  startedAt?: Date;
   executionTimeMs?: number;
   error?: string;
   output?: unknown;
@@ -83,6 +84,7 @@ export type TaskEventType =
   | 'task:step_started'
   | 'task:step_completed'
   | 'task:step_failed'
+  | 'task:step_skipped'
   | 'task:approval_required'
   | 'task:cancelled'
   | 'task:completed'
@@ -106,13 +108,14 @@ export interface TaskStateChangedEvent extends TaskEvent {
 }
 
 export interface TaskStepEvent extends TaskEvent {
-  type: 'task:step_started' | 'task:step_completed' | 'task:step_failed';
+  type: 'task:step_started' | 'task:step_completed' | 'task:step_failed' | 'task:step_skipped';
   data: {
     stepId: string;
     stepIndex: number;
     description: string;
     output?: unknown;
     error?: string;
+    reason?: string;
     executionTimeMs?: number;
   };
 }
@@ -137,7 +140,7 @@ export interface TaskApprovalRequiredEvent extends TaskEvent {
 }
 
 export type TaskEventHandler = (event: TaskEvent) => void;
-export type TaskEventFilter = (event: TaskEvent) => boolean;
+export type PersistenceErrorHandler = (error: Error, operation: 'create' | 'update', task: Task) => void;
 
 // ============================================================================
 // Storage Integration Interface
@@ -239,6 +242,8 @@ class TaskEventEmitter {
 export interface TaskEngineOptions {
   storage?: TaskStorage;
   enablePersistence?: boolean;
+  /** Callback for persistence errors. If not provided, errors are logged to console. */
+  onPersistenceError?: PersistenceErrorHandler;
 }
 
 export class TaskEngine {
@@ -246,10 +251,12 @@ export class TaskEngine {
   private eventEmitter = new TaskEventEmitter();
   private storage?: TaskStorage;
   private enablePersistence: boolean;
+  private onPersistenceError?: PersistenceErrorHandler;
 
   constructor(options: TaskEngineOptions = {}) {
     this.storage = options.storage;
     this.enablePersistence = options.enablePersistence ?? false;
+    this.onPersistenceError = options.onPersistenceError;
   }
 
   // ========================================================================
@@ -279,7 +286,11 @@ export class TaskEngine {
     // Persist if storage is enabled
     if (this.enablePersistence && this.storage) {
       this.storage.createTask(task).catch((error) => {
-        console.error('Failed to persist task:', error);
+        if (this.onPersistenceError) {
+          this.onPersistenceError(error instanceof Error ? error : new Error(String(error)), 'create', task);
+        } else {
+          console.error('Failed to persist task:', error);
+        }
       });
     }
 
@@ -349,7 +360,11 @@ export class TaskEngine {
     // Persist if storage is enabled
     if (this.enablePersistence && this.storage) {
       this.storage.updateTask(task).catch((error) => {
-        console.error('Failed to update task:', error);
+        if (this.onPersistenceError) {
+          this.onPersistenceError(error instanceof Error ? error : new Error(String(error)), 'update', task);
+        } else {
+          console.error('Failed to update task:', error);
+        }
       });
     }
 
@@ -436,7 +451,11 @@ export class TaskEngine {
     // Persist if storage is enabled
     if (this.enablePersistence && this.storage) {
       this.storage.updateTask(task).catch((error) => {
-        console.error('Failed to update task with plan:', error);
+        if (this.onPersistenceError) {
+          this.onPersistenceError(error instanceof Error ? error : new Error(String(error)), 'update', task);
+        } else {
+          console.error('Failed to update task with plan:', error);
+        }
       });
     }
 
@@ -504,6 +523,7 @@ export class TaskEngine {
 
     const step = task.plan.steps[stepIndex];
     step.status = 'running';
+    step.startedAt = new Date();
     task.currentStepIndex = stepIndex;
     task.updatedAt = new Date();
 
@@ -539,7 +559,7 @@ export class TaskEngine {
 
     step.status = 'completed';
     step.output = output;
-    step.executionTimeMs = Date.now() - task.updatedAt.getTime();
+    step.executionTimeMs = step.startedAt ? Date.now() - step.startedAt.getTime() : undefined;
     task.updatedAt = new Date();
 
     // Emit step completed event
@@ -576,7 +596,7 @@ export class TaskEngine {
 
     step.status = 'failed';
     step.error = error;
-    step.executionTimeMs = Date.now() - task.updatedAt.getTime();
+    step.executionTimeMs = step.startedAt ? Date.now() - step.startedAt.getTime() : undefined;
     task.error = error;
     task.updatedAt = new Date();
 
@@ -603,6 +623,40 @@ export class TaskEngine {
       timestamp: Date.now(),
       data: { error, stepId },
     });
+
+    return step;
+  }
+
+  /**
+   * Skip a step (mark as skipped without executing)
+   */
+  skipStep(taskId: string, stepId: string, reason?: string): PlanStep {
+    const task = this.tasks.get(taskId);
+    if (!task?.plan) {
+      throw new TaskNotFoundError(taskId);
+    }
+
+    const step = task.plan.steps.find((s) => s.id === stepId);
+    if (!step) {
+      throw new Error(`Step not found: ${stepId}`);
+    }
+
+    step.status = 'skipped';
+    task.updatedAt = new Date();
+
+    // Emit step skipped event
+    this.eventEmitter.emit({
+      type: 'task:step_skipped',
+      taskId,
+      sessionId: task.sessionId,
+      timestamp: Date.now(),
+      data: {
+        stepId,
+        stepIndex: task.plan.steps.indexOf(step),
+        description: step.description,
+        reason,
+      },
+    } as TaskStepEvent);
 
     return step;
   }

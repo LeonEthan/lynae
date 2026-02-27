@@ -486,6 +486,88 @@ describe('TaskEngine', () => {
         'Something went wrong'
       );
     });
+
+    it('should skip a step and emit event', () => {
+      const skippedHandler = vi.fn();
+      engine.on('task:step_skipped', skippedHandler);
+
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Step 1', requiresApproval: false, dependencies: [] },
+        { description: 'Step 2', requiresApproval: false, dependencies: [] },
+      ]);
+
+      const stepId = task.plan!.steps[0].id;
+      engine.skipStep(task.id, stepId, 'User chose to skip');
+
+      const updatedTask = engine.getTask(task.id);
+      expect(updatedTask?.plan?.steps[0].status).toBe('skipped');
+
+      expect(skippedHandler).toHaveBeenCalledOnce();
+      expect(skippedHandler.mock.calls[0][0]).toMatchObject({
+        type: 'task:step_skipped',
+        data: {
+          stepId,
+          description: 'Step 1',
+          reason: 'User chose to skip',
+        },
+      });
+    });
+
+    it('should count skipped steps as completed in progress', () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Step 1', requiresApproval: false, dependencies: [] },
+        { description: 'Step 2', requiresApproval: false, dependencies: [] },
+      ]);
+
+      const stepId = task.plan!.steps[0].id;
+      engine.skipStep(task.id, stepId);
+
+      const progress = engine.getProgress(task.id);
+      expect(progress.completed).toBe(1);
+      expect(progress.percentage).toBe(50);
+      expect(engine.areAllStepsCompleted(task.id)).toBe(false);
+    });
+
+    it('should track accurate execution time for steps', async () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Step 1', requiresApproval: false, dependencies: [] },
+      ]);
+
+      const stepId = task.plan!.steps[0].id;
+      engine.startStep(task.id, stepId);
+
+      // Wait a bit to ensure measurable execution time
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      engine.completeStep(task.id, stepId, { result: 'success' });
+
+      const step = task.plan!.steps[0];
+      expect(step.executionTimeMs).toBeDefined();
+      expect(step.executionTimeMs).toBeGreaterThanOrEqual(50);
+      expect(step.startedAt).toBeDefined();
+    });
+
+    it('should track execution time for failed steps', async () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Step 1', requiresApproval: false, dependencies: [] },
+      ]);
+
+      const stepId = task.plan!.steps[0].id;
+      engine.startStep(task.id, stepId);
+
+      // Wait a bit
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      engine.failStep(task.id, stepId, 'Error occurred');
+
+      const step = task.plan!.steps[0];
+      expect(step.executionTimeMs).toBeDefined();
+      expect(step.executionTimeMs).toBeGreaterThanOrEqual(30);
+    });
   });
 
   describe('Cancellation', () => {
@@ -562,6 +644,64 @@ describe('TaskEngine', () => {
       engineWithoutStorage.transitionState(task.id, 'planning');
 
       expect(engineWithoutStorage.getTask(task.id)?.state).toBe('planning');
+    });
+
+    it('should call onPersistenceError callback when persistence fails', async () => {
+      const persistenceErrorHandler = vi.fn();
+      const failingStorage: TaskStorage = {
+        async createTask() { throw new Error('DB connection failed'); },
+        async updateTask() { throw new Error('DB connection failed'); },
+        async getTask() { return undefined; },
+        async getTasksBySession() { return []; },
+        async deleteTask() {},
+      };
+
+      const engineWithFailingStorage = new TaskEngine({
+        storage: failingStorage,
+        enablePersistence: true,
+        onPersistenceError: persistenceErrorHandler,
+      });
+
+      const task = engineWithFailingStorage.createTask('session-1', '/workspace');
+
+      // Wait for async persistence
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(persistenceErrorHandler).toHaveBeenCalledOnce();
+      expect(persistenceErrorHandler.mock.calls[0][0]).toBeInstanceOf(Error);
+      expect(persistenceErrorHandler.mock.calls[0][0].message).toBe('DB connection failed');
+      expect(persistenceErrorHandler.mock.calls[0][1]).toBe('create');
+      expect(persistenceErrorHandler.mock.calls[0][2].id).toBe(task.id);
+    });
+
+    it('should call onPersistenceError for update operations', async () => {
+      const persistenceErrorHandler = vi.fn();
+      let shouldFail = false;
+      const mockStorage: TaskStorage = {
+        async createTask() {},
+        async updateTask() {
+          if (shouldFail) throw new Error('Update failed');
+        },
+        async getTask() { return undefined; },
+        async getTasksBySession() { return []; },
+        async deleteTask() {},
+      };
+
+      const engineWithMockStorage = new TaskEngine({
+        storage: mockStorage,
+        enablePersistence: true,
+        onPersistenceError: persistenceErrorHandler,
+      });
+
+      const task = engineWithMockStorage.createTask('session-1', '/workspace');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      shouldFail = true;
+      engineWithMockStorage.transitionState(task.id, 'planning');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(persistenceErrorHandler).toHaveBeenCalledTimes(1);
+      expect(persistenceErrorHandler.mock.calls[0][1]).toBe('update');
     });
   });
 
