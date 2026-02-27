@@ -63,7 +63,7 @@ export function createConnection(config: DatabaseConfig): DatabaseConnection {
  * Default migrations folder relative to the package root
  * This resolves to packages/storage/drizzle regardless of where the process is run
  */
-const DEFAULT_MIGRATIONS_FOLDER = join(__dirname, '..', '..', 'drizzle');
+const DEFAULT_MIGRATIONS_FOLDER = join(__dirname, '..', 'drizzle');
 
 /**
  * Runs migrations on the database
