@@ -48,6 +48,14 @@ export interface AgentSession {
 }
 
 /**
+ * Breaking change:
+ * - `tool_result` runtime events are no longer emitted by this adapter.
+ * - `addToolResult()` session API has been removed.
+ *
+ * Tool orchestration is now delegated to Claude Agent SDK runtime behavior.
+ */
+
+/**
  * Configuration options for creating a new session.
  */
 export interface SessionConfig {
@@ -295,8 +303,23 @@ class ClaudeSession implements AgentSession {
   }
 
   cancel(): void {
+    const queryToClose = this.activeQuery;
+
     this.activeAbortController?.abort();
-    this.activeQuery?.close();
+    this.activeAbortController = null;
+    this.activeQuery = null;
+
+    if (!queryToClose) {
+      return;
+    }
+
+    // close() may throw if the underlying query is already finished/closed.
+    try {
+      queryToClose.close();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[ClaudeSession] Ignored query close error during cancel: ${message}`);
+    }
   }
 }
 
@@ -384,6 +407,8 @@ export class ClaudeAdapter implements AgentRuntime {
   listCapabilities(): RuntimeCapabilities {
     return {
       models: [
+        // Keep aliases aligned with the Claude Agent SDK / Claude Code accepted model names.
+        // Update this list when Anthropic deprecates or renames model identifiers.
         'claude-sonnet-4-5',
         'claude-opus-4-1',
         'claude-haiku-3-5',

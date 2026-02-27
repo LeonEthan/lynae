@@ -265,6 +265,38 @@ describe('ClaudeAdapter (thin adapter)', () => {
 
       expect(firstQuery.close).toHaveBeenCalledTimes(1);
     });
+
+    it('cancel() is safe after query completion', async () => {
+      const session = await adapter.createSession({ workspaceRoot: '/repo' });
+      mockQuery.mockReturnValueOnce(
+        createMockQuery([
+          {
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          } as unknown as SDKMessage,
+        ])
+      );
+
+      await collectEvents(session.sendMessage('done'));
+
+      expect(() => session.cancel()).not.toThrow();
+    });
+
+    it('cancel() swallows close errors from query handle', async () => {
+      const session = await adapter.createSession({ workspaceRoot: '/repo' });
+      const firstQuery = createNeverEndingQuery();
+      firstQuery.close.mockImplementation(() => {
+        throw new Error('already closed');
+      });
+      mockQuery.mockReturnValueOnce(firstQuery);
+
+      const stream = session.sendMessage('long-running');
+      void stream[Symbol.asyncIterator]().next();
+
+      expect(() => session.cancel()).not.toThrow();
+    });
   });
 
   describe('listCapabilities', () => {
