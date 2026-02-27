@@ -1,6 +1,13 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  createSession,
+  deleteSession,
+  getSessions,
+  initMockSessions,
+  switchSession,
+} from './sessions'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -31,7 +38,16 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  // IPC handlers (placeholder for PR-03 expansion)
+  // Initialize mock sessions for PR-02
+  initMockSessions()
+
+  // Session management IPC handlers
+  ipcMain.handle('sessions:get', () => getSessions())
+  ipcMain.handle('sessions:create', (_, req) => createSession(req))
+  ipcMain.handle('sessions:switch', (_, sessionId) => switchSession(sessionId))
+  ipcMain.handle('sessions:delete', (_, sessionId) => deleteSession(sessionId))
+
+  // Legacy placeholder
   ipcMain.handle('ping', () => 'pong')
 
   createWindow()
