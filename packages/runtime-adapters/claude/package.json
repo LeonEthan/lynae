@@ -15,12 +15,15 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "clean": "node ../../scripts/clean.mjs dist"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0"
   },
   "devDependencies": {
-    "typescript": "~5.7.3"
+    "typescript": "~5.7.3",
+    "vitest": "^3.0.0"
   }
 }
