@@ -1,10 +1,11 @@
 import { defineConfig } from 'drizzle-kit';
+import { join } from 'path';
 
 export default defineConfig({
-  schema: './src/schema/*',
+  schema: './src/schema/index.ts',
   out: './drizzle',
   dialect: 'sqlite',
   dbCredentials: {
-    url: process.env.DATABASE_URL || './data.db',
+    url: process.env.DATABASE_URL || join(process.cwd(), 'data.db'),
   },
 });
