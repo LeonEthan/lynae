@@ -1,29 +1,88 @@
 // Claude Runtime Adapter - Wraps Claude SDK to provide AgentRuntime interface
 import Anthropic from '@anthropic-ai/sdk';
 
+/**
+ * Runtime interface for AI agent providers.
+ * Abstracts away provider-specific details from the business layer.
+ */
 export interface AgentRuntime {
+  /**
+   * Create a new session with the specified configuration.
+   * @param config - Session configuration including model, tools, and workspace
+   * @returns A new AgentSession instance
+   */
   createSession(config: SessionConfig): Promise<AgentSession>;
+
+  /**
+   * List the capabilities supported by this runtime.
+   * @returns RuntimeCapabilities describing available models and features
+   */
   listCapabilities(): RuntimeCapabilities;
 }
 
+/**
+ * A session represents a single conversation with an AI agent.
+ * Maintains conversation history and provides streaming message support.
+ */
 export interface AgentSession {
+  /** Unique identifier for this session */
   id: string;
+
+  /**
+   * Send a message and receive a streaming response.
+   * @param message - The user message to send
+   * @returns AsyncIterable of RuntimeEvent objects (text, tool_use, error, done)
+   */
   sendMessage(message: string): AsyncIterable<RuntimeEvent>;
+
+  /**
+   * Cancel any in-progress streaming request.
+   * Safe to call even when no request is active.
+   */
   cancel(): void;
 }
 
+/**
+ * Configuration options for creating a new session.
+ */
 export interface SessionConfig {
+  /** Claude model identifier (e.g., 'claude-3-5-sonnet-latest') */
   model?: string;
+
+  /** System prompt to set the AI's behavior and context */
   systemPrompt?: string;
+
+  /** Root directory for file operations (security boundary) */
   workspaceRoot: string;
+
+  /** Tool definitions available for the AI to use */
   tools?: ToolDefinition[];
+
+  /** Maximum tokens to generate per response (default: 8192) */
   maxTokens?: number;
+
+  /** Sampling temperature 0.0-1.0 (default: 0.7) */
   temperature?: number;
+
+  /**
+   * Maximum number of conversation messages to retain.
+   * Older messages are removed to prevent memory leaks.
+   * Default: 100 messages (50 exchanges)
+   */
+  maxHistoryMessages?: number;
 }
 
+/**
+ * Definition of a tool that can be called by the AI.
+ */
 export interface ToolDefinition {
+  /** Tool name used in tool_use blocks */
   name: string;
+
+  /** Description of what the tool does */
   description: string;
+
+  /** JSON Schema for the tool's input parameters */
   inputSchema: {
     type: 'object';
     properties?: Record<string, unknown>;
@@ -31,6 +90,9 @@ export interface ToolDefinition {
   };
 }
 
+/**
+ * Events emitted during streaming message processing.
+ */
 export type RuntimeEvent =
   | { type: 'text'; content: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
@@ -38,10 +100,20 @@ export type RuntimeEvent =
   | { type: 'error'; message: string }
   | { type: 'done' };
 
+/**
+ * Capabilities and features supported by this runtime.
+ */
 export interface RuntimeCapabilities {
+  /** List of available model identifiers */
   models: string[];
+
+  /** Whether tool/function calling is supported */
   supportsTools: boolean;
+
+  /** Whether streaming responses are supported */
   supportsStreaming: boolean;
+
+  /** Maximum context window size in tokens */
   maxContextTokens: number;
 }
 
@@ -49,6 +121,12 @@ interface ConversationMessage {
   role: 'user' | 'assistant';
   content: string | Array<Anthropic.Messages.ContentBlockParam>;
 }
+
+/**
+ * Maximum conversation history messages before truncation.
+ * Set to 100 messages (approximately 50 user/assistant exchanges).
+ */
+const DEFAULT_MAX_HISTORY_MESSAGES = 100;
 
 class ClaudeSession implements AgentSession {
   id: string;
@@ -67,6 +145,20 @@ class ClaudeSession implements AgentSession {
     this.config = config;
   }
 
+  /**
+   * Trims conversation history to prevent unbounded memory growth.
+   * Keeps the most recent messages up to maxHistoryMessages limit.
+   */
+  private trimConversationHistory(): void {
+    const maxMessages = this.config.maxHistoryMessages ?? DEFAULT_MAX_HISTORY_MESSAGES;
+
+    if (this.conversationHistory.length > maxMessages) {
+      // Keep only the most recent messages
+      const excessCount = this.conversationHistory.length - maxMessages;
+      this.conversationHistory.splice(0, excessCount);
+    }
+  }
+
   async *sendMessage(message: string): AsyncGenerator<RuntimeEvent> {
     // Create a new abort controller for this request
     this.abortController = new AbortController();
@@ -77,6 +169,9 @@ class ClaudeSession implements AgentSession {
         role: 'user',
         content: message,
       });
+
+      // Trim history to prevent memory leaks
+      this.trimConversationHistory();
 
       // Prepare tool definitions for the API
       const tools: Anthropic.Messages.ToolUnion[] | undefined = this.config.tools?.map(
@@ -116,7 +211,7 @@ class ClaudeSession implements AgentSession {
         }
 
         // Handle the event based on type
-        const eventType = event.type as string;
+        const eventType = event.type;
 
         if (eventType === 'content_block_start') {
           const startEvent = event as Anthropic.Messages.RawContentBlockStartEvent;
@@ -156,7 +251,8 @@ class ClaudeSession implements AgentSession {
                 input,
               };
             } catch {
-              // If JSON parsing fails, yield with empty input
+              // If JSON parsing fails, log warning and yield with empty input
+              console.warn(`[ClaudeSession] Failed to parse tool input JSON: ${accumulatedJson}`);
               currentToolUseBlock.input = {};
               assistantContent.push(currentToolUseBlock);
               yield {
@@ -240,6 +336,10 @@ class ClaudeSession implements AgentSession {
   /**
    * Add a tool result to the conversation history.
    * This should be called after a tool_use event and tool execution.
+   *
+   * @param toolUseId - The ID from the tool_use event
+   * @param output - The tool execution result (string or object)
+   * @param isError - Whether the tool execution failed
    */
   addToolResult(toolUseId: string, output: unknown, isError = false): void {
     this.conversationHistory.push({
@@ -253,23 +353,45 @@ class ClaudeSession implements AgentSession {
         } as Anthropic.Messages.ToolResultBlockParam,
       ],
     });
+
+    // Trim history after adding tool result
+    this.trimConversationHistory();
   }
 }
 
+/**
+ * Adapter for the Anthropic Claude API.
+ * Implements the AgentRuntime interface to provide a provider-agnostic
+ * abstraction for the business layer.
+ */
 export class ClaudeAdapter implements AgentRuntime {
   private apiKey?: string;
   private baseURL?: string;
 
+  /**
+   * Create a new ClaudeAdapter instance.
+   *
+   * @param config - Adapter configuration
+   * @param config.apiKey - Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
+   * @param config.baseURL - Optional custom API base URL
+   */
   constructor(config: { apiKey?: string; baseURL?: string } = {}) {
     this.apiKey = config.apiKey;
     this.baseURL = config.baseURL;
   }
 
+  /**
+   * Create a new session for conversation.
+   *
+   * @param config - Session configuration
+   * @returns A new ClaudeSession instance
+   */
   async createSession(config: SessionConfig): Promise<AgentSession> {
     const client = new Anthropic({
       apiKey: this.apiKey,
       baseURL: this.baseURL,
-      dangerouslyAllowBrowser: true, // Allow usage in Electron renderer
+      // Required for Electron renderer process where nodeIntegration may be limited
+      dangerouslyAllowBrowser: true,
     });
 
     const session = new ClaudeSession(
@@ -281,6 +403,12 @@ export class ClaudeAdapter implements AgentRuntime {
     return session;
   }
 
+  /**
+   * Get the capabilities of this runtime.
+   * Includes all available Claude models and feature flags.
+   *
+   * @returns RuntimeCapabilities describing supported features
+   */
   listCapabilities(): RuntimeCapabilities {
     return {
       models: [
@@ -301,6 +429,10 @@ export class ClaudeAdapter implements AgentRuntime {
   }
 }
 
+/**
+ * Generate a unique session ID.
+ * Format: session-{timestamp}-{random}
+ */
 function generateId(): string {
   return `session-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
