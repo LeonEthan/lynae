@@ -1,9 +1,12 @@
 import { test, expect } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 test.describe('Session List E2E', () => {
-  let electronApp: Awaited<ReturnType<typeof electron.launch>>
+  let electronApp: Awaited<ReturnType<typeof electron.launch>> | undefined
 
   test.beforeEach(async () => {
     // Launch Electron app
@@ -17,7 +20,9 @@ test.describe('Session List E2E', () => {
   })
 
   test.afterEach(async () => {
-    await electronApp.close()
+    if (electronApp) {
+      await electronApp.close()
+    }
   })
 
   test('keyboard navigation - tab through session list elements', async () => {
@@ -58,8 +63,8 @@ test.describe('Session List E2E', () => {
     const sessions = window.locator('.session-item')
     await expect(sessions).toHaveCount(3) // 2 initial + 1 new
 
-    // Verify new session is active
-    const newSession = sessions.last()
+    // Verify new session is active (prepended, so it's first)
+    const newSession = sessions.first()
     await expect(newSession).toHaveClass(/active/)
   })
 
