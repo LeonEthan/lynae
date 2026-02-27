@@ -4,28 +4,29 @@ import {
   TaskState,
   TaskStorage,
   Task,
+  SerializableTask,
   StateTransitionError,
   TaskNotFoundError,
   TaskCancelledError,
 } from '../index.js';
 
-// Mock storage for testing
+// Mock storage for testing - uses SerializableTask (no runtime context)
 class MockStorage implements TaskStorage {
-  private tasks = new Map<string, Task>();
+  private tasks = new Map<string, SerializableTask>();
 
-  async createTask(task: Task): Promise<void> {
-    this.tasks.set(task.id, task);
+  async createTask(task: SerializableTask): Promise<void> {
+    this.tasks.set(task.id, { ...task });
   }
 
-  async updateTask(task: Task): Promise<void> {
-    this.tasks.set(task.id, task);
+  async updateTask(task: SerializableTask): Promise<void> {
+    this.tasks.set(task.id, { ...task });
   }
 
-  async getTask(id: string): Promise<Task | undefined> {
+  async getTask(id: string): Promise<SerializableTask | undefined> {
     return this.tasks.get(id);
   }
 
-  async getTasksBySession(sessionId: string): Promise<Task[]> {
+  async getTasksBySession(sessionId: string): Promise<SerializableTask[]> {
     return Array.from(this.tasks.values()).filter(
       (t) => t.sessionId === sessionId
     );
@@ -812,6 +813,205 @@ describe('TaskEngine', () => {
       expect(completedTask?.completedAt!.getTime()).toBeGreaterThanOrEqual(
         completedTask!.createdAt.getTime()
       );
+    });
+  });
+
+  describe('Serializable Task (P1: Non-serializable fields)', () => {
+    it('should persist tasks without AbortController or Map', async () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Step 1', requiresApproval: false, dependencies: [] },
+      ]);
+
+      // Wait for persistence
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const persisted = await storage.getTask(task.id);
+      expect(persisted).toBeDefined();
+      // Verify serializable fields
+      expect(persisted?.id).toBe(task.id);
+      expect(persisted?.workspaceRoot).toBe('/workspace');
+      // Verify runtime fields are NOT in persisted data
+      expect(persisted).not.toHaveProperty('context');
+      expect(persisted).not.toHaveProperty('abortController');
+      expect(persisted).not.toHaveProperty('metadata');
+    });
+
+    it('should persist step changes to storage', async () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Step 1', requiresApproval: false, dependencies: [] },
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const stepId = task.plan!.steps[0].id;
+      engine.startStep(task.id, stepId);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Verify step status persisted
+      const persistedAfterStart = await storage.getTask(task.id);
+      expect(persistedAfterStart?.plan?.steps[0].status).toBe('running');
+      expect(persistedAfterStart?.plan?.steps[0].startedAt).toBeDefined();
+
+      engine.completeStep(task.id, stepId, { result: 'success' });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Verify completion persisted
+      const persistedAfterComplete = await storage.getTask(task.id);
+      expect(persistedAfterComplete?.plan?.steps[0].status).toBe('completed');
+      expect(persistedAfterComplete?.plan?.steps[0].output).toEqual({ result: 'success' });
+    });
+  });
+
+  describe('State Machine Guards (P2: Terminal state bypass)', () => {
+    it('should prevent setPlan on completed task', () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.transitionState(task.id, 'planning');
+      engine.transitionState(task.id, 'executing');
+      engine.transitionState(task.id, 'completed');
+
+      expect(() => engine.setPlan(task.id, [
+        { description: 'New step', requiresApproval: false, dependencies: [] },
+      ])).toThrow('Cannot set plan: task is in terminal state');
+    });
+
+    it('should prevent setPlan on failed task', () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.transitionState(task.id, 'planning');
+      engine.transitionState(task.id, 'failed');
+
+      expect(() => engine.setPlan(task.id, [
+        { description: 'New step', requiresApproval: false, dependencies: [] },
+      ])).toThrow('Cannot set plan: task is in terminal state');
+    });
+
+    it('should prevent setPlan on cancelled task', () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.cancelTask(task.id);
+
+      expect(() => engine.setPlan(task.id, [
+        { description: 'New step', requiresApproval: false, dependencies: [] },
+      ])).toThrow(TaskCancelledError);
+    });
+
+    it('should prevent step mutations on terminal tasks', () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Step 1', requiresApproval: false, dependencies: [] },
+      ]);
+      const stepId = task.plan!.steps[0].id;
+
+      engine.transitionState(task.id, 'planning');
+      engine.transitionState(task.id, 'executing');
+      engine.transitionState(task.id, 'completed');
+
+      expect(() => engine.startStep(task.id, stepId)).toThrow('Cannot start step: task is in terminal state');
+      expect(() => engine.completeStep(task.id, stepId)).toThrow('Cannot complete step: task is in terminal state');
+      expect(() => engine.failStep(task.id, stepId, 'error')).toThrow('Cannot fail step: task is in terminal state');
+      expect(() => engine.skipStep(task.id, stepId)).toThrow('Cannot skip step: task is in terminal state');
+    });
+
+    it('should prevent step mutations on cancelled task', () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Step 1', requiresApproval: false, dependencies: [] },
+      ]);
+      const stepId = task.plan!.steps[0].id;
+      engine.startStep(task.id, stepId);
+
+      engine.cancelTask(task.id);
+
+      expect(() => engine.completeStep(task.id, stepId)).toThrow(TaskCancelledError);
+    });
+  });
+
+  describe('Approval Flow Enforcement (P2)', () => {
+    it('should not return steps requiring approval from getNextRunnableStep', () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Approved step', requiresApproval: false, dependencies: [] },
+        { description: 'Needs approval', requiresApproval: true, dependencies: [] },
+      ]);
+
+      // getNextRunnableStep should skip the step requiring approval
+      const next = engine.getNextRunnableStep(task.id);
+      expect(next?.description).toBe('Approved step');
+    });
+
+    it('should return steps awaiting approval from getNextStepAwaitingApproval', () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Approved step', requiresApproval: false, dependencies: [] },
+        { description: 'Needs approval', requiresApproval: true, dependencies: [] },
+      ]);
+
+      const awaiting = engine.getNextStepAwaitingApproval(task.id);
+      expect(awaiting?.description).toBe('Needs approval');
+    });
+
+    it('should emit approval_required event and throw when starting step that requires approval', () => {
+      const approvalHandler = vi.fn();
+      engine.on('task:approval_required', approvalHandler);
+
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Dangerous action', requiresApproval: true, toolName: 'file:delete', dependencies: [] },
+      ]);
+
+      const stepId = task.plan!.steps[0].id;
+
+      expect(() => engine.startStep(task.id, stepId)).toThrow('requires approval before execution');
+      expect(approvalHandler).toHaveBeenCalledOnce();
+      expect(approvalHandler.mock.calls[0][0]).toMatchObject({
+        type: 'task:approval_required',
+        data: {
+          stepId,
+          description: 'Dangerous action',
+          toolName: 'file:delete',
+        },
+      });
+    });
+
+    it('should allow step execution after approval', () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Needs approval', requiresApproval: true, dependencies: [] },
+      ]);
+
+      const stepId = task.plan!.steps[0].id;
+
+      // Approve the step
+      engine.approveStep(task.id, stepId);
+
+      // Now step can be started
+      const step = engine.startStep(task.id, stepId);
+      expect(step.status).toBe('running');
+      expect(step.requiresApproval).toBe(false); // Approval flag cleared
+    });
+
+    it('should throw when approving step that does not require approval', () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'No approval needed', requiresApproval: false, dependencies: [] },
+      ]);
+
+      const stepId = task.plan!.steps[0].id;
+      expect(() => engine.approveStep(task.id, stepId)).toThrow('does not require approval');
+    });
+
+    it('should persist approval changes', async () => {
+      const task = engine.createTask('session-1', '/workspace');
+      engine.setPlan(task.id, [
+        { description: 'Needs approval', requiresApproval: true, dependencies: [] },
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const stepId = task.plan!.steps[0].id;
+      engine.approveStep(task.id, stepId);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const persisted = await storage.getTask(task.id);
+      expect(persisted?.plan?.steps[0].requiresApproval).toBe(false);
     });
   });
 });

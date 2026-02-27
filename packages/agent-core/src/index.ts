@@ -26,28 +26,11 @@ export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipp
 
 /**
  * Represents a task managed by the TaskEngine.
+ * This combines serializable data with runtime context.
  */
-export interface Task {
-  /** Unique identifier for this task */
-  id: string;
-  /** Session this task belongs to */
-  sessionId: string;
-  /** Current state in the state machine */
-  state: TaskState;
-  /** Execution plan (set during planning state) */
-  plan?: ExecutionPlan;
-  /** Index of currently executing step, -1 if not started */
-  currentStepIndex: number;
-  /** Runtime context for this task */
+export interface Task extends SerializableTask {
+  /** Runtime context for this task (not persisted) */
   context: AgentContext;
-  /** Error message if state is 'failed' */
-  error?: string;
-  /** When the task was created */
-  createdAt: Date;
-  /** When the task was last updated */
-  updatedAt: Date;
-  /** When the task reached a terminal state (completed/failed/cancelled) */
-  completedAt?: Date;
 }
 
 /**
@@ -97,7 +80,25 @@ export interface PlanStep {
 }
 
 /**
+ * Serializable task data that can be persisted to storage.
+ * This excludes runtime-only fields like AbortController.
+ */
+export interface SerializableTask {
+  id: string;
+  sessionId: string;
+  state: TaskState;
+  plan?: ExecutionPlan;
+  currentStepIndex: number;
+  workspaceRoot: string;
+  error?: string;
+  createdAt: Date;
+  updatedAt: Date;
+  completedAt?: Date;
+}
+
+/**
  * Runtime context passed to tasks during execution.
+ * This is NOT persisted - it's recreated when tasks are loaded from storage.
  */
 export interface AgentContext {
   /** Root directory for file operations (security boundary) */
@@ -108,6 +109,13 @@ export interface AgentContext {
   abortController: AbortController;
   /** Additional runtime metadata (not persisted) */
   metadata: Map<string, unknown>;
+}
+
+/**
+ * Internal task representation combining serializable data with runtime context.
+ */
+interface InternalTask extends SerializableTask {
+  context: AgentContext;
 }
 
 // ============================================================================
@@ -191,7 +199,34 @@ export interface TaskApprovalRequiredEvent extends TaskEvent {
 }
 
 export type TaskEventHandler = (event: TaskEvent) => void;
-export type PersistenceErrorHandler = (error: Error, operation: 'create' | 'update', task: Task) => void;
+export type PersistenceErrorHandler = (error: Error, operation: 'create' | 'update', task: SerializableTask) => void;
+
+// ============================================================================
+// Serialization Helpers
+// ============================================================================
+
+/**
+ * Extract serializable data from a Task, excluding runtime context.
+ */
+function toSerializableTask(task: InternalTask): SerializableTask {
+  const { context, ...serializable } = task;
+  return serializable;
+}
+
+/**
+ * Rehydrate a serializable task into a full Task with runtime context.
+ */
+function fromSerializableTask(serializable: SerializableTask): InternalTask {
+  return {
+    ...serializable,
+    context: {
+      workspaceRoot: serializable.workspaceRoot,
+      sessionId: serializable.sessionId,
+      abortController: new AbortController(),
+      metadata: new Map(),
+    },
+  };
+}
 
 // ============================================================================
 // Storage Integration Interface
@@ -199,16 +234,17 @@ export type PersistenceErrorHandler = (error: Error, operation: 'create' | 'upda
 
 /**
  * Interface for task persistence. Implementations handle storage backend details.
+ * Note: Only SerializableTask data is persisted. Runtime context (AbortController, etc.) is recreated on load.
  */
 export interface TaskStorage {
   /** Persist a new task */
-  createTask(task: Task): Promise<void>;
+  createTask(task: SerializableTask): Promise<void>;
   /** Update an existing task */
-  updateTask(task: Task): Promise<void>;
+  updateTask(task: SerializableTask): Promise<void>;
   /** Retrieve a task by ID */
-  getTask(id: string): Promise<Task | undefined>;
+  getTask(id: string): Promise<SerializableTask | undefined>;
   /** Retrieve all tasks for a session */
-  getTasksBySession(sessionId: string): Promise<Task[]>;
+  getTasksBySession(sessionId: string): Promise<SerializableTask[]>;
   /** Delete a task */
   deleteTask(id: string): Promise<void>;
 }
@@ -306,7 +342,7 @@ export interface TaskEngineOptions {
 }
 
 export class TaskEngine {
-  private tasks: Map<string, Task> = new Map();
+  private tasks: Map<string, InternalTask> = new Map();
   private eventEmitter = new TaskEventEmitter();
   private storage?: TaskStorage;
   private enablePersistence: boolean;
@@ -318,6 +354,43 @@ export class TaskEngine {
     this.onPersistenceError = options.onPersistenceError;
   }
 
+  /**
+   * Helper to persist task if enabled
+   */
+  private persistTask(task: InternalTask, operation: 'create' | 'update'): void {
+    if (!this.enablePersistence || !this.storage) return;
+
+    const serializable = toSerializableTask(task);
+    this.storage[operation === 'create' ? 'createTask' : 'updateTask'](serializable).catch((error) => {
+      if (this.onPersistenceError) {
+        this.onPersistenceError(error instanceof Error ? error : new Error(String(error)), operation, serializable);
+      } else {
+        console.error(`Failed to ${operation} task:`, error);
+      }
+    });
+  }
+
+  /**
+   * Check if task is in a terminal state (completed, failed, cancelled)
+   */
+  private isTerminalState(state: TaskState): boolean {
+    return state === 'completed' || state === 'failed' || state === 'cancelled';
+  }
+
+  /**
+   * Guard to prevent mutations on terminal or cancelled tasks
+   */
+  private guardMutable(task: InternalTask, operation: string): void {
+    // Check cancellation first (more specific error)
+    if (task.context.abortController.signal.aborted) {
+      throw new TaskCancelledError(task.id);
+    }
+    // Then check terminal state
+    if (this.isTerminalState(task.state)) {
+      throw new Error(`Cannot ${operation}: task is in terminal state '${task.state}'`);
+    }
+  }
+
   // ========================================================================
   // Task Lifecycle
   // ========================================================================
@@ -325,11 +398,12 @@ export class TaskEngine {
   createTask(sessionId: string, workspaceRoot: string): Task {
     const abortController = new AbortController();
 
-    const task: Task = {
+    const task: InternalTask = {
       id: generateId(),
       sessionId,
       state: 'idle',
       currentStepIndex: -1,
+      workspaceRoot,
       context: {
         workspaceRoot,
         sessionId,
@@ -343,15 +417,7 @@ export class TaskEngine {
     this.tasks.set(task.id, task);
 
     // Persist if storage is enabled
-    if (this.enablePersistence && this.storage) {
-      this.storage.createTask(task).catch((error) => {
-        if (this.onPersistenceError) {
-          this.onPersistenceError(error instanceof Error ? error : new Error(String(error)), 'create', task);
-        } else {
-          console.error('Failed to persist task:', error);
-        }
-      });
-    }
+    this.persistTask(task, 'create');
 
     // Emit event
     this.eventEmitter.emit({
@@ -393,8 +459,9 @@ export class TaskEngine {
       try {
         await this.storage.deleteTask(taskId);
       } catch (error) {
+        const serializable = toSerializableTask(task);
         if (this.onPersistenceError) {
-          this.onPersistenceError(error instanceof Error ? error : new Error(String(error)), 'update', task);
+          this.onPersistenceError(error instanceof Error ? error : new Error(String(error)), 'update', serializable);
         } else {
           console.error('Failed to delete task from storage:', error);
         }
@@ -444,15 +511,7 @@ export class TaskEngine {
     }
 
     // Persist if storage is enabled
-    if (this.enablePersistence && this.storage) {
-      this.storage.updateTask(task).catch((error) => {
-        if (this.onPersistenceError) {
-          this.onPersistenceError(error instanceof Error ? error : new Error(String(error)), 'update', task);
-        } else {
-          console.error('Failed to update task:', error);
-        }
-      });
-    }
+    this.persistTask(task, 'update');
 
     // Emit state change event
     this.eventEmitter.emit({
@@ -518,6 +577,9 @@ export class TaskEngine {
       throw new TaskNotFoundError(taskId);
     }
 
+    // Guard against mutations on terminal/cancelled tasks
+    this.guardMutable(task, 'set plan');
+
     const planSteps: PlanStep[] = steps.map((step, index) => ({
       ...step,
       id: generateStepId(taskId, index),
@@ -535,15 +597,7 @@ export class TaskEngine {
     task.updatedAt = new Date();
 
     // Persist if storage is enabled
-    if (this.enablePersistence && this.storage) {
-      this.storage.updateTask(task).catch((error) => {
-        if (this.onPersistenceError) {
-          this.onPersistenceError(error instanceof Error ? error : new Error(String(error)), 'update', task);
-        } else {
-          console.error('Failed to update task with plan:', error);
-        }
-      });
-    }
+    this.persistTask(task, 'update');
 
     // Emit plan created event
     this.eventEmitter.emit({
@@ -575,7 +629,8 @@ export class TaskEngine {
   }
 
   /**
-   * Get the next pending step that has all dependencies satisfied
+   * Get the next pending step that has all dependencies satisfied.
+   * Excludes steps that require approval (use getNextStepAwaitingApproval for those).
    */
   getNextRunnableStep(taskId: string): PlanStep | undefined {
     const task = this.tasks.get(taskId);
@@ -583,14 +638,69 @@ export class TaskEngine {
 
     const completedStepIds = new Set(
       task.plan.steps
-        .filter((s) => s.status === 'completed')
+        .filter((s) => s.status === 'completed' || s.status === 'skipped')
         .map((s) => s.id)
     );
 
     return task.plan.steps.find((step) => {
       if (step.status !== 'pending') return false;
+      // Skip steps that require approval - they need explicit approval
+      if (step.requiresApproval) return false;
       return step.dependencies.every((depId) => completedStepIds.has(depId));
     });
+  }
+
+  /**
+   * Get the next step that requires approval and is ready to run (dependencies satisfied).
+   * Returns undefined if no such step exists.
+   */
+  getNextStepAwaitingApproval(taskId: string): PlanStep | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task?.plan) return undefined;
+
+    const completedStepIds = new Set(
+      task.plan.steps
+        .filter((s) => s.status === 'completed' || s.status === 'skipped')
+        .map((s) => s.id)
+    );
+
+    return task.plan.steps.find((step) => {
+      if (step.status !== 'pending') return false;
+      if (!step.requiresApproval) return false;
+      return step.dependencies.every((depId) => completedStepIds.has(depId));
+    });
+  }
+
+  /**
+   * Approve a step for execution (required when step.requiresApproval is true)
+   */
+  approveStep(taskId: string, stepId: string): PlanStep {
+    const task = this.tasks.get(taskId);
+    if (!task?.plan) {
+      throw new TaskNotFoundError(taskId);
+    }
+
+    // Guard against mutations on terminal/cancelled tasks
+    this.guardMutable(task, 'approve step');
+
+    const step = task.plan.steps.find((s) => s.id === stepId);
+    if (!step) {
+      throw new Error(`Step not found: ${stepId}`);
+    }
+
+    if (!step.requiresApproval) {
+      throw new Error(`Step ${stepId} does not require approval`);
+    }
+
+    // Mark step as approved by clearing the requiresApproval flag
+    // The step will now be returned by getNextRunnableStep
+    step.requiresApproval = false;
+    task.updatedAt = new Date();
+
+    // Persist the approval
+    this.persistTask(task, 'update');
+
+    return step;
   }
 
   /**
@@ -602,16 +712,42 @@ export class TaskEngine {
       throw new TaskNotFoundError(taskId);
     }
 
+    // Guard against mutations on terminal/cancelled tasks
+    this.guardMutable(task, 'start step');
+
     const stepIndex = task.plan.steps.findIndex((s) => s.id === stepId);
     if (stepIndex === -1) {
       throw new Error(`Step not found: ${stepId}`);
     }
 
     const step = task.plan.steps[stepIndex];
+
+    // Enforce approval requirement
+    if (step.requiresApproval) {
+      // Emit approval required event
+      this.eventEmitter.emit({
+        type: 'task:approval_required',
+        taskId,
+        sessionId: task.sessionId,
+        timestamp: Date.now(),
+        data: {
+          stepId,
+          description: step.description,
+          toolName: step.toolName,
+          toolInput: step.toolInput,
+        },
+      } as TaskApprovalRequiredEvent);
+
+      throw new Error(`Step ${stepId} requires approval before execution. Call approveStep() first or listen for task:approval_required event.`);
+    }
+
     step.status = 'running';
     step.startedAt = new Date();
     task.currentStepIndex = stepIndex;
     task.updatedAt = new Date();
+
+    // Persist step change
+    this.persistTask(task, 'update');
 
     // Emit step started event
     this.eventEmitter.emit({
@@ -638,6 +774,9 @@ export class TaskEngine {
       throw new TaskNotFoundError(taskId);
     }
 
+    // Guard against mutations on terminal/cancelled tasks
+    this.guardMutable(task, 'complete step');
+
     const step = task.plan.steps.find((s) => s.id === stepId);
     if (!step) {
       throw new Error(`Step not found: ${stepId}`);
@@ -647,6 +786,9 @@ export class TaskEngine {
     step.output = output;
     step.executionTimeMs = step.startedAt ? Date.now() - step.startedAt.getTime() : undefined;
     task.updatedAt = new Date();
+
+    // Persist step change
+    this.persistTask(task, 'update');
 
     // Emit step completed event
     this.eventEmitter.emit({
@@ -675,6 +817,9 @@ export class TaskEngine {
       throw new TaskNotFoundError(taskId);
     }
 
+    // Guard against mutations on terminal/cancelled tasks
+    this.guardMutable(task, 'fail step');
+
     const step = task.plan.steps.find((s) => s.id === stepId);
     if (!step) {
       throw new Error(`Step not found: ${stepId}`);
@@ -685,6 +830,9 @@ export class TaskEngine {
     step.executionTimeMs = step.startedAt ? Date.now() - step.startedAt.getTime() : undefined;
     task.error = error;
     task.updatedAt = new Date();
+
+    // Persist step change
+    this.persistTask(task, 'update');
 
     // Emit step failed event
     this.eventEmitter.emit({
@@ -722,6 +870,9 @@ export class TaskEngine {
       throw new TaskNotFoundError(taskId);
     }
 
+    // Guard against mutations on terminal/cancelled tasks
+    this.guardMutable(task, 'skip step');
+
     const step = task.plan.steps.find((s) => s.id === stepId);
     if (!step) {
       throw new Error(`Step not found: ${stepId}`);
@@ -729,6 +880,9 @@ export class TaskEngine {
 
     step.status = 'skipped';
     task.updatedAt = new Date();
+
+    // Persist step change
+    this.persistTask(task, 'update');
 
     // Emit step skipped event
     this.eventEmitter.emit({
