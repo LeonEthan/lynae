@@ -68,3 +68,10 @@ export function initMockSessions(): void {
     switchSession(session1.id)
   }
 }
+
+// Reset function for testing
+export function __resetSessions(): void {
+  sessions.clear()
+  activeSessionId = null
+  sessionCounter = 0
+}
