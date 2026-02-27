@@ -48,14 +48,17 @@ export function createMessageRepository(connection: DatabaseConnection): Message
       cursor?: Date,
       limit: number = 50
     ): Promise<{ messages: Message[]; hasMore: boolean }> {
-      const conditions = [eq(messages.sessionId, sessionId)];
-
-      if (cursor) {
-        conditions.push(desc(messages.createdAt));
-      }
+      // Build where clause: always filter by sessionId, optionally filter by cursor
+      // Drizzle stores timestamps as seconds (Unix epoch), so we convert cursor to seconds
+      const whereClause = cursor
+        ? and(
+            eq(messages.sessionId, sessionId),
+            sql`messages.created_at < ${Math.floor(cursor.getTime() / 1000)}`
+          )
+        : eq(messages.sessionId, sessionId);
 
       const results = await db.query.messages.findMany({
-        where: and(...conditions),
+        where: whereClause,
         orderBy: [desc(messages.createdAt)],
         limit: limit + 1,
       });

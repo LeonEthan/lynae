@@ -1,5 +1,5 @@
 // Checkpoint repository - handles checkpoint CRUD operations
-import { eq, desc, and } from 'drizzle-orm';
+import { eq, desc, and, sql } from 'drizzle-orm';
 import { DatabaseConnection } from '../db.js';
 import { checkpoints, Checkpoint, NewCheckpoint } from '../schema/index.js';
 
@@ -22,7 +22,7 @@ export interface CheckpointRepository {
 export function createCheckpointRepository(
   connection: DatabaseConnection
 ): CheckpointRepository {
-  const { db } = connection;
+  const { db, sqlite } = connection;
 
   return {
     async findById(id: string): Promise<Checkpoint | undefined> {
@@ -88,18 +88,13 @@ export function createCheckpointRepository(
     },
 
     async deleteOlderThan(sessionId: string, beforeDate: Date): Promise<number> {
-      const result = await db
-        .delete(checkpoints)
-        .where(
-          and(
-            eq(checkpoints.sessionId, sessionId),
-            // Note: drizzle-orm doesn't export lt/gt by default in all versions
-            // Using sql template for comparison
-          )
-        );
-      // For proper implementation, we'd use:
-      // import { lt } from 'drizzle-orm';
-      // .where(and(eq(checkpoints.sessionId, sessionId), lt(checkpoints.createdAt, beforeDate)))
+      // Drizzle stores timestamps as seconds (Unix epoch), not milliseconds
+      const beforeTimestampSeconds = Math.floor(beforeDate.getTime() / 1000);
+      const result = sqlite
+        .prepare(
+          'DELETE FROM checkpoints WHERE session_id = ? AND created_at < ?'
+        )
+        .run(sessionId, beforeTimestampSeconds);
       return result.changes || 0;
     },
   };

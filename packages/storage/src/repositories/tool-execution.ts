@@ -1,5 +1,5 @@
 // Tool execution repository - handles tool execution CRUD operations
-import { eq, desc, and, asc, sql } from 'drizzle-orm';
+import { eq, desc, and, or, asc, sql } from 'drizzle-orm';
 import { DatabaseConnection } from '../db.js';
 import { toolExecutions, ToolExecution, NewToolExecution } from '../schema/index.js';
 
@@ -57,7 +57,7 @@ export function createToolExecutionRepository(
 
     async findPending(): Promise<ToolExecution[]> {
       return await db.query.toolExecutions.findMany({
-        where: and(
+        where: or(
           eq(toolExecutions.status, 'pending'),
           eq(toolExecutions.status, 'awaiting_approval')
         ),

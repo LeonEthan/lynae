@@ -25,7 +25,6 @@ import {
 
 export interface StorageConfig extends DatabaseConfig {
   autoInitialize?: boolean;
-  enableWAL?: boolean;
 }
 
 export class Storage {
@@ -42,7 +41,6 @@ export class Storage {
   constructor(config: StorageConfig) {
     this.config = {
       autoInitialize: true,
-      enableWAL: true,
       ...config,
     };
   }
@@ -61,12 +59,13 @@ export class Storage {
     // Create database connection
     this.connection = createConnection({
       databasePath: this.config.databasePath,
-      migrationsFolder: this.config.migrationsFolder,
-      runMigrations: this.config.runMigrations,
+      enableWAL: this.config.enableWAL,
     });
 
-    // Run migrations
-    await runMigrations(this.connection, this.config.migrationsFolder);
+    // Run migrations if not disabled (default is to run migrations)
+    if (this.config.runMigrations !== false) {
+      await runMigrations(this.connection, this.config.migrationsFolder);
+    }
 
     // Initialize repositories
     this._sessions = createSessionRepository(this.connection);

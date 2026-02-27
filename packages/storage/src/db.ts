@@ -13,6 +13,10 @@ export interface DatabaseConfig {
   databasePath: string;
   migrationsFolder?: string;
   runMigrations?: boolean;
+  /**
+   * Enable WAL mode for better concurrency (default: true)
+   */
+  enableWAL?: boolean;
 }
 
 export interface DatabaseConnection {
@@ -34,8 +38,11 @@ export function createConnection(config: DatabaseConfig): DatabaseConnection {
   // Create SQLite connection
   const sqlite = new Database(config.databasePath);
 
-  // Enable WAL mode for better concurrency
-  sqlite.pragma('journal_mode = WAL');
+  // Enable WAL mode for better concurrency (default: true)
+  const enableWAL = config.enableWAL !== false;
+  if (enableWAL) {
+    sqlite.pragma('journal_mode = WAL');
+  }
 
   // Enable foreign keys
   sqlite.pragma('foreign_keys = ON');
@@ -53,6 +60,12 @@ export function createConnection(config: DatabaseConfig): DatabaseConnection {
 }
 
 /**
+ * Default migrations folder relative to the package root
+ * This resolves to packages/storage/drizzle regardless of where the process is run
+ */
+const DEFAULT_MIGRATIONS_FOLDER = join(__dirname, '..', '..', 'drizzle');
+
+/**
  * Runs migrations on the database
  * Uses drizzle-kit generated migrations
  */
@@ -60,20 +73,19 @@ export async function runMigrations(
   connection: DatabaseConnection,
   migrationsFolder?: string
 ): Promise<void> {
-  const migrationsPath =
-    migrationsFolder || join(process.cwd(), 'drizzle');
+  const migrationsPath = migrationsFolder || DEFAULT_MIGRATIONS_FOLDER;
 
   // Check if migrations folder exists
   if (!existsSync(migrationsPath)) {
     // If no migrations folder, apply schema directly (development mode)
-    console.log('No migrations folder found, applying schema directly');
+    console.log('No migrations folder found at', migrationsPath, '- applying schema directly');
     await applySchemaDirectly(connection);
     return;
   }
 
   try {
     migrate(connection.db, { migrationsFolder: migrationsPath });
-    console.log('Migrations applied successfully');
+    console.log('Migrations applied successfully from', migrationsPath);
   } catch (error) {
     console.error('Migration failed:', error);
     throw error;

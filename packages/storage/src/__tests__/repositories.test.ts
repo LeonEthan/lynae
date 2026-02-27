@@ -570,4 +570,151 @@ describe('Repositories', () => {
       expect(messages).toHaveLength(0);
     });
   });
+
+  describe('Regression tests', () => {
+    describe('findPending with OR logic', () => {
+      beforeEach(async () => {
+        await storage.sessions.create({
+          id: 'test-session',
+          title: 'Test Session',
+          status: 'active',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      });
+
+      it('should find both pending and awaiting_approval executions', async () => {
+        const now = new Date();
+
+        await storage.toolExecutions.create({
+          id: 'exec-pending',
+          sessionId: 'test-session',
+          toolName: 'read_file',
+          input: {},
+          status: 'pending',
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        await storage.toolExecutions.create({
+          id: 'exec-awaiting',
+          sessionId: 'test-session',
+          toolName: 'write_file',
+          input: {},
+          status: 'awaiting_approval',
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        await storage.toolExecutions.create({
+          id: 'exec-completed',
+          sessionId: 'test-session',
+          toolName: 'delete_file',
+          input: {},
+          status: 'completed',
+          createdAt: now,
+          updatedAt: now,
+          completedAt: now,
+        });
+
+        const pending = await storage.toolExecutions.findPending();
+        expect(pending).toHaveLength(2);
+        expect(pending.map(e => e.id).sort()).toEqual(['exec-awaiting', 'exec-pending']);
+      });
+    });
+
+    describe('deleteOlderThan with date filtering', () => {
+      beforeEach(async () => {
+        await storage.sessions.create({
+          id: 'test-session',
+          title: 'Test Session',
+          status: 'active',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      });
+
+      it('should only delete checkpoints older than the specified date', async () => {
+        const now = new Date();
+        const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+        const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+        const threeHoursAgo = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+
+        // Create checkpoints at different times
+        await storage.checkpoints.create({
+          id: 'checkpoint-recent',
+          sessionId: 'test-session',
+          name: 'Recent',
+          messageCount: 1,
+          createdAt: oneHourAgo,
+        });
+
+        await storage.checkpoints.create({
+          id: 'checkpoint-middle',
+          sessionId: 'test-session',
+          name: 'Middle',
+          messageCount: 2,
+          createdAt: twoHoursAgo,
+        });
+
+        await storage.checkpoints.create({
+          id: 'checkpoint-old',
+          sessionId: 'test-session',
+          name: 'Old',
+          messageCount: 3,
+          createdAt: threeHoursAgo,
+        });
+
+        // Delete checkpoints older than 2.5 hours ago
+        const cutoff = new Date(now.getTime() - 2.5 * 60 * 60 * 1000);
+        const deleted = await storage.checkpoints.deleteOlderThan('test-session', cutoff);
+        expect(deleted).toBe(1);
+
+        // Verify only the old checkpoint was deleted
+        const remaining = await storage.checkpoints.findBySessionId('test-session');
+        expect(remaining).toHaveLength(2);
+        expect(remaining.map(c => c.id).sort()).toEqual(['checkpoint-middle', 'checkpoint-recent']);
+      });
+    });
+
+    describe('message pagination with cursor', () => {
+      beforeEach(async () => {
+        await storage.sessions.create({
+          id: 'test-session',
+          title: 'Test Session',
+          status: 'active',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      });
+
+      it('should paginate correctly using cursor', async () => {
+        const now = new Date();
+
+        // Create 10 messages with different timestamps
+        for (let i = 0; i < 10; i++) {
+          await storage.messages.create({
+            id: `msg-${i}`,
+            sessionId: 'test-session',
+            role: i % 2 === 0 ? 'user' : 'assistant',
+            content: `Message ${i}`,
+            createdAt: new Date(now.getTime() - i * 1000), // Each 1 second apart
+          });
+        }
+
+        // First page: get 3 most recent messages
+        const page1 = await storage.messages.findBySessionIdPaginated('test-session', undefined, 3);
+        expect(page1.messages).toHaveLength(3);
+        expect(page1.hasMore).toBe(true);
+        // Returned in ascending order, so most recent is last
+        expect(page1.messages[2].content).toBe('Message 0');
+
+        // Second page: use cursor from oldest message of page 1
+        const cursor = page1.messages[0].createdAt;
+        const page2 = await storage.messages.findBySessionIdPaginated('test-session', cursor, 3);
+        expect(page2.messages).toHaveLength(3);
+        expect(page2.hasMore).toBe(true);
+      });
+    });
+  });
 });
