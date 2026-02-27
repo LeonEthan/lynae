@@ -421,12 +421,100 @@ export class ClaudeAdapter implements AgentRuntime {
   }
 
   /**
+   * Validates the session configuration.
+   * Throws an error if required fields are missing or invalid.
+   *
+   * @param config - Session configuration to validate
+   */
+  private validateSessionConfig(config: SessionConfig): void {
+    // Validate workspaceRoot
+    if (!config.workspaceRoot) {
+      throw new Error('workspaceRoot is required');
+    }
+    if (typeof config.workspaceRoot !== 'string') {
+      throw new Error('workspaceRoot must be a string');
+    }
+    if (config.workspaceRoot.trim().length === 0) {
+      throw new Error('workspaceRoot cannot be empty');
+    }
+
+    // Validate model if provided
+    if (config.model !== undefined) {
+      if (typeof config.model !== 'string') {
+        throw new Error('model must be a string');
+      }
+      if (config.model.trim().length === 0) {
+        throw new Error('model cannot be empty');
+      }
+    }
+
+    // Validate maxTokens if provided
+    if (config.maxTokens !== undefined) {
+      if (typeof config.maxTokens !== 'number') {
+        throw new Error('maxTokens must be a number');
+      }
+      if (!Number.isInteger(config.maxTokens) || config.maxTokens <= 0) {
+        throw new Error('maxTokens must be a positive integer');
+      }
+    }
+
+    // Validate temperature if provided
+    if (config.temperature !== undefined) {
+      if (typeof config.temperature !== 'number') {
+        throw new Error('temperature must be a number');
+      }
+      if (config.temperature < 0 || config.temperature > 1) {
+        throw new Error('temperature must be between 0 and 1');
+      }
+    }
+
+    // Validate maxHistoryMessages if provided
+    if (config.maxHistoryMessages !== undefined) {
+      if (typeof config.maxHistoryMessages !== 'number') {
+        throw new Error('maxHistoryMessages must be a number');
+      }
+      if (!Number.isInteger(config.maxHistoryMessages) || config.maxHistoryMessages < 1) {
+        throw new Error('maxHistoryMessages must be a positive integer');
+      }
+    }
+
+    // Validate systemPrompt if provided
+    if (config.systemPrompt !== undefined) {
+      if (typeof config.systemPrompt !== 'string') {
+        throw new Error('systemPrompt must be a string');
+      }
+    }
+
+    // Validate tools if provided
+    if (config.tools !== undefined) {
+      if (!Array.isArray(config.tools)) {
+        throw new Error('tools must be an array');
+      }
+      for (const tool of config.tools) {
+        if (!tool.name || typeof tool.name !== 'string') {
+          throw new Error('Tool name is required and must be a string');
+        }
+        if (!tool.description || typeof tool.description !== 'string') {
+          throw new Error(`Tool "${tool.name}" description is required and must be a string`);
+        }
+        if (!tool.inputSchema || tool.inputSchema.type !== 'object') {
+          throw new Error(`Tool "${tool.name}" inputSchema must be an object type`);
+        }
+      }
+    }
+  }
+
+  /**
    * Create a new session for conversation.
    *
    * @param config - Session configuration
    * @returns A new ClaudeSession instance
+   * @throws Error if config validation fails
    */
   async createSession(config: SessionConfig): Promise<AgentSession> {
+    // Validate configuration before creating session
+    this.validateSessionConfig(config);
+
     const client = new Anthropic({
       apiKey: this.apiKey,
       baseURL: this.baseURL,

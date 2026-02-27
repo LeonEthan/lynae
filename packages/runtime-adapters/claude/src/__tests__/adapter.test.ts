@@ -123,6 +123,118 @@ describe('ClaudeAdapter', () => {
       expect(session).toBeDefined();
     });
 
+    it('should throw error when workspaceRoot is missing', async () => {
+      const config = {} as SessionConfig;
+
+      await expect(adapter.createSession(config)).rejects.toThrow('workspaceRoot is required');
+    });
+
+    it('should throw error when workspaceRoot is empty string', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '   ',
+      };
+
+      await expect(adapter.createSession(config)).rejects.toThrow('workspaceRoot cannot be empty');
+    });
+
+    it('should throw error when workspaceRoot is not a string', async () => {
+      const config = {
+        workspaceRoot: 123,
+      } as unknown as SessionConfig;
+
+      await expect(adapter.createSession(config)).rejects.toThrow('workspaceRoot must be a string');
+    });
+
+    it('should throw error when model is empty string', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test',
+        model: '',
+      };
+
+      await expect(adapter.createSession(config)).rejects.toThrow('model cannot be empty');
+    });
+
+    it('should throw error when maxTokens is not a positive integer', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test',
+        maxTokens: 0,
+      };
+
+      await expect(adapter.createSession(config)).rejects.toThrow('maxTokens must be a positive integer');
+    });
+
+    it('should throw error when maxTokens is negative', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test',
+        maxTokens: -100,
+      };
+
+      await expect(adapter.createSession(config)).rejects.toThrow('maxTokens must be a positive integer');
+    });
+
+    it('should throw error when temperature is out of range', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test',
+        temperature: 1.5,
+      };
+
+      await expect(adapter.createSession(config)).rejects.toThrow('temperature must be between 0 and 1');
+    });
+
+    it('should throw error when temperature is negative', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test',
+        temperature: -0.1,
+      };
+
+      await expect(adapter.createSession(config)).rejects.toThrow('temperature must be between 0 and 1');
+    });
+
+    it('should throw error when maxHistoryMessages is less than 1', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test',
+        maxHistoryMessages: 0,
+      };
+
+      await expect(adapter.createSession(config)).rejects.toThrow('maxHistoryMessages must be a positive integer');
+    });
+
+    it('should throw error when tools is not an array', async () => {
+      const config = {
+        workspaceRoot: '/test',
+        tools: 'not an array',
+      } as unknown as SessionConfig;
+
+      await expect(adapter.createSession(config)).rejects.toThrow('tools must be an array');
+    });
+
+    it('should throw error when tool is missing name', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test',
+        tools: [{ description: 'A tool', inputSchema: { type: 'object' } } as ToolDefinition],
+      };
+
+      await expect(adapter.createSession(config)).rejects.toThrow('Tool name is required');
+    });
+
+    it('should throw error when tool is missing description', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test',
+        tools: [{ name: 'test_tool', inputSchema: { type: 'object' } } as ToolDefinition],
+      };
+
+      await expect(adapter.createSession(config)).rejects.toThrow('Tool "test_tool" description is required');
+    });
+
+    it('should throw error when tool has invalid inputSchema', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test',
+        tools: [{ name: 'test_tool', description: 'A tool', inputSchema: { type: 'string' } } as unknown as ToolDefinition],
+      };
+
+      await expect(adapter.createSession(config)).rejects.toThrow('Tool "test_tool" inputSchema must be an object type');
+    });
+
     it('should create session with tools', async () => {
       const tools: ToolDefinition[] = [
         {
