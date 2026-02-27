@@ -29,7 +29,9 @@ type StreamEvent =
   | { type: 'content_block_start'; index: number; content_block: { type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> } }
   | { type: 'content_block_delta'; index: number; delta: { type: 'text_delta'; text: string } | { type: 'input_json_delta'; partial_json: string } }
   | { type: 'content_block_stop'; index: number }
-  | { type: 'message_stop' };
+  | { type: 'message_stop' }
+  | { type: 'message_start'; message: { id: string; type: string; role: string; content: unknown[]; model: string; stop_reason: null; stop_sequence: null; usage: { input_tokens: number; output_tokens: number } } }
+  | { type: 'message_delta'; delta: { stop_reason: string | null; stop_sequence: string | null }; usage: { output_tokens: number } };
 
 function createMockStream(events: StreamEvent[]): { [Symbol.asyncIterator](): AsyncGenerator<StreamEvent> } {
   return {
@@ -41,25 +43,31 @@ function createMockStream(events: StreamEvent[]): { [Symbol.asyncIterator](): As
   };
 }
 
-// Store mock state between calls
-let mockStreamReturnValue: ReturnType<typeof createMockStream> = createMockStream([]);
+// Module-level variables that will be reset for each test
+let mockMessages = { stream: vi.fn() };
+let MockAnthropic: ReturnType<typeof Object.assign>;
 
-const mockMessages = {
-  stream: vi.fn().mockImplementation(() => mockStreamReturnValue),
-};
+// Factory function to create fresh mock instances for each test
+function createMockAnthropic() {
+  mockMessages = {
+    stream: vi.fn(),
+  };
 
-const mockAnthropicConstructor = vi.fn().mockImplementation(() => ({
-  messages: mockMessages,
-}));
+  const mockAnthropicConstructor = vi.fn().mockImplementation(() => ({
+    messages: mockMessages,
+  }));
 
-// Add static properties to mock
-const MockAnthropic = Object.assign(mockAnthropicConstructor, {
-  APIError: MockAPIError,
-  APIUserAbortError: MockAPIUserAbortError,
-});
+  // Add static properties to mock
+  return Object.assign(mockAnthropicConstructor, {
+    APIError: MockAPIError,
+    APIUserAbortError: MockAPIUserAbortError,
+  });
+}
 
 vi.mock('@anthropic-ai/sdk', () => ({
-  default: MockAnthropic,
+  get default() {
+    return MockAnthropic;
+  },
 }));
 
 // Type guard for text events
@@ -84,8 +92,9 @@ describe('ClaudeAdapter', () => {
   let adapter: AgentRuntime;
 
   beforeEach(() => {
+    // Create fresh mock instance for each test
+    MockAnthropic = createMockAnthropic();
     vi.clearAllMocks();
-    mockStreamReturnValue = createMockStream([]);
     adapter = new ClaudeAdapterClass({ apiKey: 'test-api-key' }) as AgentRuntime;
   });
 
@@ -178,14 +187,14 @@ describe('ClaudeAdapter', () => {
       const session = await adapter.createSession(config);
 
       // Mock stream events
-      mockStreamReturnValue = createMockStream([
+      mockMessages.stream.mockImplementation(() => createMockStream([
         { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
         { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } },
         { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ' ' } },
         { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'world' } },
         { type: 'content_block_stop', index: 0 },
         { type: 'message_stop' },
-      ]);
+      ]));
 
       const events: RuntimeEvent[] = [];
       for await (const event of session.sendMessage('Hello')) {
@@ -206,14 +215,14 @@ describe('ClaudeAdapter', () => {
 
       const session = await adapter.createSession(config);
 
-      mockStreamReturnValue = createMockStream([
+      mockMessages.stream.mockImplementation(() => createMockStream([
         { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
         { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'First' } },
         { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Second' } },
         { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Third' } },
         { type: 'content_block_stop', index: 0 },
         { type: 'message_stop' },
-      ]);
+      ]));
 
       const textEvents: Array<{ type: 'text'; content: string }> = [];
       for await (const event of session.sendMessage('Test')) {
@@ -289,12 +298,12 @@ describe('ClaudeAdapter', () => {
       const session = await adapter.createSession(config);
 
       // Mock stream without usage information (no message_start with usage or message_delta)
-      mockStreamReturnValue = createMockStream([
+      mockMessages.stream.mockImplementation(() => createMockStream([
         { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
         { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } },
         { type: 'content_block_stop', index: 0 },
         { type: 'message_stop' },
-      ]);
+      ]));
 
       const events: RuntimeEvent[] = [];
       for await (const event of session.sendMessage('Hi')) {
@@ -327,7 +336,7 @@ describe('ClaudeAdapter', () => {
 
       const session = await adapter.createSession(config);
 
-      mockStreamReturnValue = createMockStream([
+      mockMessages.stream.mockImplementation(() => createMockStream([
         {
           type: 'content_block_start',
           index: 0,
@@ -340,7 +349,7 @@ describe('ClaudeAdapter', () => {
         },
         { type: 'content_block_stop', index: 0 },
         { type: 'message_stop' },
-      ]);
+      ]));
 
       const events: RuntimeEvent[] = [];
       for await (const event of session.sendMessage('What is the weather?')) {
@@ -378,7 +387,7 @@ describe('ClaudeAdapter', () => {
 
       const session = await adapter.createSession(config);
 
-      mockStreamReturnValue = createMockStream([
+      mockMessages.stream.mockImplementation(() => createMockStream([
         {
           type: 'content_block_start',
           index: 0,
@@ -394,7 +403,7 @@ describe('ClaudeAdapter', () => {
         { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{}' } },
         { type: 'content_block_stop', index: 1 },
         { type: 'message_stop' },
-      ]);
+      ]));
 
       const events: RuntimeEvent[] = [];
       for await (const event of session.sendMessage('Use multiple tools')) {
@@ -423,7 +432,7 @@ describe('ClaudeAdapter', () => {
 
       const session = await adapter.createSession(config);
 
-      mockStreamReturnValue = createMockStream([
+      mockMessages.stream.mockImplementation(() => createMockStream([
         {
           type: 'content_block_start',
           index: 0,
@@ -431,7 +440,7 @@ describe('ClaudeAdapter', () => {
         },
         { type: 'content_block_stop', index: 0 },
         { type: 'message_stop' },
-      ]);
+      ]));
 
       const events: RuntimeEvent[] = [];
       for await (const event of session.sendMessage('Use tool')) {
@@ -467,7 +476,7 @@ describe('ClaudeAdapter', () => {
       const session = await adapter.createSession(config);
 
       // Simulate invalid JSON in the tool input stream
-      mockStreamReturnValue = createMockStream([
+      mockMessages.stream.mockImplementation(() => createMockStream([
         {
           type: 'content_block_start',
           index: 0,
@@ -480,7 +489,7 @@ describe('ClaudeAdapter', () => {
         },
         { type: 'content_block_stop', index: 0 },
         { type: 'message_stop' },
-      ]);
+      ]));
 
       const events: RuntimeEvent[] = [];
       for await (const event of session.sendMessage('Use tool with invalid JSON')) {
@@ -694,9 +703,9 @@ describe('ClaudeAdapter', () => {
 
       const session = await adapter.createSession(config);
 
-      mockStreamReturnValue = createMockStream([
+      mockMessages.stream.mockImplementation(() => createMockStream([
         { type: 'message_stop' },
-      ]);
+      ]));
 
       for await (const _ of session.sendMessage('Hello')) {
         // consume events
@@ -716,9 +725,9 @@ describe('ClaudeAdapter', () => {
 
       const session = await adapter.createSession(config);
 
-      mockStreamReturnValue = createMockStream([
+      mockMessages.stream.mockImplementation(() => createMockStream([
         { type: 'message_stop' },
-      ]);
+      ]));
 
       for await (const _ of session.sendMessage('Hello')) {
         // consume events
@@ -745,9 +754,9 @@ describe('ClaudeAdapter', () => {
         addToolResult(toolUseId: string, output: unknown, isError?: boolean): void;
       };
 
-      mockStreamReturnValue = createMockStream([
+      mockMessages.stream.mockImplementation(() => createMockStream([
         { type: 'message_stop' },
-      ]);
+      ]));
 
       // Add a tool result
       claudeSession.addToolResult('tool_123', { temperature: 72 }, false);
