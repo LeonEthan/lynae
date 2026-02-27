@@ -9,6 +9,10 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "pnpm run build && playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "clean": "node ../../scripts/clean.mjs dist"
   },
   "dependencies": {
@@ -16,15 +20,21 @@
     "@lynae/storage": "workspace:*"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^34.3.0",
+    "jsdom": "^28.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "~5.7.3",
     "vite": "^6.2.0",
     "vite-plugin-electron": "^0.29.0",
-    "vite-plugin-electron-renderer": "^0.14.6"
+    "vite-plugin-electron-renderer": "^0.14.6",
+    "vitest": "^4.0.18"
   }
 }
