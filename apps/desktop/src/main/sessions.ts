@@ -24,9 +24,17 @@ function sortByRecent(a: InternalSession, b: InternalSession): number {
   return b.sequence - a.sequence
 }
 
+// Strip internal sequence field from session for public API
+function toPublicSession(session: InternalSession): Session {
+  const { sequence: _, ...publicSession } = session
+  return publicSession
+}
+
 export function getSessions(): SessionListResponse {
   return {
-    sessions: Array.from(sessions.values()).sort(sortByRecent),
+    sessions: Array.from(sessions.values())
+      .sort(sortByRecent)
+      .map(toPublicSession),
     activeSessionId,
   }
 }
@@ -44,7 +52,7 @@ export function createSession(req?: CreateSessionRequest): Session {
   sessions.set(session.id, session)
   activeSessionId = session.id
 
-  return session
+  return toPublicSession(session)
 }
 
 export function switchSession(sessionId: string): void {
