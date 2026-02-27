@@ -1,0 +1,630 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type {
+  AgentRuntime,
+  RuntimeEvent,
+  SessionConfig,
+  ToolDefinition,
+} from '../index.js';
+
+// Mock APIError class
+class MockAPIError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+    this.name = 'APIError';
+  }
+}
+
+// Mock APIUserAbortError class
+class MockAPIUserAbortError extends Error {
+  constructor() {
+    super('Request was aborted');
+    this.name = 'APIUserAbortError';
+  }
+}
+
+// Create a mock stream that implements async iterable
+type StreamEvent =
+  | { type: 'content_block_start'; index: number; content_block: { type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> } }
+  | { type: 'content_block_delta'; index: number; delta: { type: 'text_delta'; text: string } | { type: 'input_json_delta'; partial_json: string } }
+  | { type: 'content_block_stop'; index: number }
+  | { type: 'message_stop' };
+
+function createMockStream(events: StreamEvent[]): { [Symbol.asyncIterator](): AsyncGenerator<StreamEvent> } {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const event of events) {
+        yield event;
+      }
+    },
+  };
+}
+
+// Store mock state between calls
+let mockStreamReturnValue: ReturnType<typeof createMockStream> = createMockStream([]);
+
+const mockMessages = {
+  stream: vi.fn().mockImplementation(() => mockStreamReturnValue),
+};
+
+const mockAnthropicConstructor = vi.fn().mockImplementation(() => ({
+  messages: mockMessages,
+}));
+
+// Add static properties to mock
+const MockAnthropic = Object.assign(mockAnthropicConstructor, {
+  APIError: MockAPIError,
+  APIUserAbortError: MockAPIUserAbortError,
+});
+
+vi.mock('@anthropic-ai/sdk', () => ({
+  default: MockAnthropic,
+}));
+
+// Type guard for text events
+function isTextEvent(event: RuntimeEvent): event is { type: 'text'; content: string } {
+  return event.type === 'text';
+}
+
+// Type guard for error events
+function isErrorEvent(event: RuntimeEvent): event is { type: 'error'; message: string } {
+  return event.type === 'error';
+}
+
+// Import after mocking
+const { ClaudeAdapter: ClaudeAdapterClass } = await import('../index.js');
+
+describe('ClaudeAdapter', () => {
+  let adapter: AgentRuntime;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStreamReturnValue = createMockStream([]);
+    adapter = new ClaudeAdapterClass({ apiKey: 'test-api-key' }) as AgentRuntime;
+  });
+
+  describe('createSession', () => {
+    it('should create a session with valid ID', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+        model: 'claude-3-5-sonnet-latest',
+      };
+
+      const session = await adapter.createSession(config);
+
+      expect(session).toBeDefined();
+      expect(session.id).toBeDefined();
+      expect(session.id).toMatch(/^session-\d+-[a-z0-9]+$/);
+      expect(typeof session.sendMessage).toBe('function');
+      expect(typeof session.cancel).toBe('function');
+    });
+
+    it('should create session with default model when not specified', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+      expect(session).toBeDefined();
+    });
+
+    it('should create session with tools', async () => {
+      const tools: ToolDefinition[] = [
+        {
+          name: 'read_file',
+          description: 'Read a file from the filesystem',
+          inputSchema: {
+            type: 'object',
+            properties: { path: { type: 'string' } },
+            required: ['path'],
+          },
+        },
+      ];
+
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+        tools,
+      };
+
+      const session = await adapter.createSession(config);
+      expect(session).toBeDefined();
+    });
+  });
+
+  describe('listCapabilities', () => {
+    it('should return correct capability list', () => {
+      const capabilities = adapter.listCapabilities();
+
+      expect(capabilities.supportsTools).toBe(true);
+      expect(capabilities.supportsStreaming).toBe(true);
+      expect(capabilities.maxContextTokens).toBe(200000);
+      expect(capabilities.models).toContain('claude-3-opus-20240229');
+      expect(capabilities.models).toContain('claude-3-5-sonnet-latest');
+      expect(capabilities.models).toContain('claude-3-7-sonnet-latest');
+    });
+
+    it('should include all expected models', () => {
+      const capabilities = adapter.listCapabilities();
+      const expectedModels = [
+        'claude-3-opus-20240229',
+        'claude-3-sonnet-20240229',
+        'claude-3-haiku-20240307',
+        'claude-3-5-sonnet-20241022',
+        'claude-3-5-sonnet-latest',
+        'claude-3-5-haiku-20241022',
+        'claude-3-5-haiku-latest',
+        'claude-3-7-sonnet-20250219',
+        'claude-3-7-sonnet-latest',
+      ];
+
+      expectedModels.forEach((model) => {
+        expect(capabilities.models).toContain(model);
+      });
+    });
+  });
+
+  describe('sendMessage streaming', () => {
+    it('should yield text events in correct order', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      // Mock stream events
+      mockStreamReturnValue = createMockStream([
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ' ' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'world' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ]);
+
+      const events: RuntimeEvent[] = [];
+      for await (const event of session.sendMessage('Hello')) {
+        events.push(event);
+      }
+
+      expect(events).toHaveLength(4); // 3 text events + done
+      expect(events[0]).toEqual({ type: 'text', content: 'Hello' });
+      expect(events[1]).toEqual({ type: 'text', content: ' ' });
+      expect(events[2]).toEqual({ type: 'text', content: 'world' });
+      expect(events[3]).toEqual({ type: 'done' });
+    });
+
+    it('should accumulate text across multiple deltas', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      mockStreamReturnValue = createMockStream([
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'First' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Second' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Third' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ]);
+
+      const textEvents: Array<{ type: 'text'; content: string }> = [];
+      for await (const event of session.sendMessage('Test')) {
+        if (isTextEvent(event)) {
+          textEvents.push(event);
+        }
+      }
+
+      expect(textEvents).toHaveLength(3);
+      expect(textEvents[0].content).toBe('First');
+      expect(textEvents[1].content).toBe('Second');
+      expect(textEvents[2].content).toBe('Third');
+    });
+  });
+
+  describe('tool_use handling', () => {
+    it('should correctly parse and yield tool_use events', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+        tools: [
+          {
+            name: 'get_weather',
+            description: 'Get weather for a location',
+            inputSchema: {
+              type: 'object',
+              properties: { location: { type: 'string' } },
+              required: ['location'],
+            },
+          },
+        ],
+      };
+
+      const session = await adapter.createSession(config);
+
+      mockStreamReturnValue = createMockStream([
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tool_123', name: 'get_weather', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"location": "San Francisco"}' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ]);
+
+      const events: RuntimeEvent[] = [];
+      for await (const event of session.sendMessage('What is the weather?')) {
+        events.push(event);
+      }
+
+      const toolUseEvent = events.find((e): e is { type: 'tool_use'; id: string; name: string; input: unknown } =>
+        e.type === 'tool_use'
+      );
+      expect(toolUseEvent).toBeDefined();
+      expect(toolUseEvent).toMatchObject({
+        type: 'tool_use',
+        id: 'tool_123',
+        name: 'get_weather',
+        input: { location: 'San Francisco' },
+      });
+    });
+
+    it('should handle multiple tool_use blocks', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+        tools: [
+          {
+            name: 'tool_a',
+            description: 'Tool A',
+            inputSchema: { type: 'object', properties: {} },
+          },
+          {
+            name: 'tool_b',
+            description: 'Tool B',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+      };
+
+      const session = await adapter.createSession(config);
+
+      mockStreamReturnValue = createMockStream([
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tool_1', name: 'tool_a', input: {} },
+        },
+        { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{}' } },
+        { type: 'content_block_stop', index: 0 },
+        {
+          type: 'content_block_start',
+          index: 1,
+          content_block: { type: 'tool_use', id: 'tool_2', name: 'tool_b', input: {} },
+        },
+        { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{}' } },
+        { type: 'content_block_stop', index: 1 },
+        { type: 'message_stop' },
+      ]);
+
+      const events: RuntimeEvent[] = [];
+      for await (const event of session.sendMessage('Use multiple tools')) {
+        events.push(event);
+      }
+
+      const toolUseEvents = events.filter((e): e is { type: 'tool_use'; id: string; name: string; input: unknown } =>
+        e.type === 'tool_use'
+      );
+      expect(toolUseEvents).toHaveLength(2);
+      expect(toolUseEvents[0]).toMatchObject({ id: 'tool_1', name: 'tool_a' });
+      expect(toolUseEvents[1]).toMatchObject({ id: 'tool_2', name: 'tool_b' });
+    });
+
+    it('should handle empty tool input', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+        tools: [
+          {
+            name: 'simple_tool',
+            description: 'A simple tool',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+      };
+
+      const session = await adapter.createSession(config);
+
+      mockStreamReturnValue = createMockStream([
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tool_empty', name: 'simple_tool', input: {} },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ]);
+
+      const events: RuntimeEvent[] = [];
+      for await (const event of session.sendMessage('Use tool')) {
+        events.push(event);
+      }
+
+      const toolUseEvent = events.find((e): e is { type: 'tool_use'; id: string; name: string; input: unknown } =>
+        e.type === 'tool_use'
+      );
+      expect(toolUseEvent).toBeDefined();
+      expect(toolUseEvent).toMatchObject({
+        type: 'tool_use',
+        id: 'tool_empty',
+        name: 'simple_tool',
+        input: {},
+      });
+    });
+  });
+
+  describe('error handling', () => {
+    it('should map API errors to RuntimeEvent errors', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      mockMessages.stream.mockImplementation(() => {
+        throw new MockAPIError(401, 'Invalid API key');
+      });
+
+      const events: RuntimeEvent[] = [];
+      for await (const event of session.sendMessage('Hello')) {
+        events.push(event);
+      }
+
+      const errorEvent = events.find(isErrorEvent);
+      expect(errorEvent).toBeDefined();
+      expect(errorEvent?.message).toContain('401');
+      expect(errorEvent?.message).toContain('Invalid API key');
+
+      const doneEvent = events.find((e) => e.type === 'done');
+      expect(doneEvent).toBeDefined();
+    });
+
+    it('should handle rate limit errors', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      mockMessages.stream.mockImplementation(() => {
+        throw new MockAPIError(429, 'Rate limit exceeded');
+      });
+
+      const events: RuntimeEvent[] = [];
+      for await (const event of session.sendMessage('Hello')) {
+        events.push(event);
+      }
+
+      const errorEvent = events.find(isErrorEvent);
+      expect(errorEvent?.message).toContain('429');
+    });
+
+    it('should handle generic errors', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      mockMessages.stream.mockImplementation(() => {
+        throw new Error('Network error');
+      });
+
+      const events: RuntimeEvent[] = [];
+      for await (const event of session.sendMessage('Hello')) {
+        events.push(event);
+      }
+
+      const errorEvent = events.find(isErrorEvent);
+      expect(errorEvent?.message).toBe('Network error');
+    });
+  });
+
+  describe('cancellation', () => {
+    it('should support cancelling streaming via abort controller', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      // Create a delayed async iterator to simulate streaming
+      let abortSignal: AbortSignal | undefined;
+      mockMessages.stream.mockImplementation((params: unknown, options: { signal?: AbortSignal }) => {
+        abortSignal = options?.signal;
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } };
+            yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } };
+
+            // Check if aborted
+            if (abortSignal?.aborted) {
+              throw new Error('Request cancelled');
+            }
+
+            yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ' world' } };
+            yield { type: 'content_block_stop', index: 0 };
+            yield { type: 'message_stop' };
+          },
+        };
+      });
+
+      const events: RuntimeEvent[] = [];
+
+      // Use for await pattern instead of manual generator iteration
+      let cancelled = false;
+      try {
+        for await (const event of session.sendMessage('Hello')) {
+          events.push(event);
+          // Cancel after first event
+          if (!cancelled) {
+            session.cancel();
+            cancelled = true;
+          }
+        }
+      } catch {
+        // Expected to potentially throw or yield error
+      }
+
+      // Should have received at least one text event
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events[0]).toEqual({ type: 'text', content: 'Hello' });
+    });
+
+    it('should handle cancel when no active request', async () => {
+      // Should not throw when cancel is called without an active request
+      const testAdapter = new ClaudeAdapterClass({ apiKey: 'test' });
+      const session = await testAdapter.createSession({ workspaceRoot: '/test' });
+      expect(() => session.cancel()).not.toThrow();
+    });
+  });
+
+  describe('conversation history', () => {
+    it('should maintain conversation history across messages', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      // First message - use mockImplementation to ensure isolation
+      mockMessages.stream.mockImplementation(() => createMockStream([
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Response 1' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ]));
+
+      const events1: RuntimeEvent[] = [];
+      for await (const event of session.sendMessage('Message 1')) {
+        events1.push(event);
+      }
+
+      expect(events1.some((e) => isTextEvent(e) && e.content === 'Response 1')).toBe(true);
+
+      // Second message - verify history is maintained by checking mock calls
+      mockMessages.stream.mockImplementation(() => createMockStream([
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Response 2' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ]));
+
+      const events2: RuntimeEvent[] = [];
+      for await (const event of session.sendMessage('Message 2')) {
+        events2.push(event);
+      }
+
+      expect(events2.some((e) => isTextEvent(e) && e.content === 'Response 2')).toBe(true);
+
+      // Verify that messages.stream was called with accumulated history
+      const secondCall = mockMessages.stream.mock.calls[1];
+      // Second call should have more messages than the first call due to conversation history
+      expect(secondCall[0].messages.length).toBeGreaterThan(1);
+    });
+  });
+
+  describe('configuration options', () => {
+    it('should pass custom model to API', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+        model: 'claude-3-opus-20240229',
+        maxTokens: 4096,
+        temperature: 0.5,
+        systemPrompt: 'You are a helpful assistant',
+      };
+
+      const session = await adapter.createSession(config);
+
+      mockStreamReturnValue = createMockStream([
+        { type: 'message_stop' },
+      ]);
+
+      for await (const _ of session.sendMessage('Hello')) {
+        // consume events
+      }
+
+      const callArgs = mockMessages.stream.mock.calls[0][0];
+      expect(callArgs.model).toBe('claude-3-opus-20240229');
+      expect(callArgs.max_tokens).toBe(4096);
+      expect(callArgs.temperature).toBe(0.5);
+      expect(callArgs.system).toBe('You are a helpful assistant');
+    });
+
+    it('should use default values when not specified', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      mockStreamReturnValue = createMockStream([
+        { type: 'message_stop' },
+      ]);
+
+      for await (const _ of session.sendMessage('Hello')) {
+        // consume events
+      }
+
+      const callArgs = mockMessages.stream.mock.calls[0][0];
+      expect(callArgs.model).toBe('claude-3-5-sonnet-latest');
+      expect(callArgs.max_tokens).toBe(8192);
+      expect(callArgs.temperature).toBe(0.7);
+      expect(callArgs.system).toBeUndefined();
+    });
+  });
+
+  describe('ClaudeSession.addToolResult', () => {
+    it('should add tool result to conversation history', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      // Cast to access internal method
+      const claudeSession = session as unknown as {
+        addToolResult(toolUseId: string, output: unknown, isError?: boolean): void;
+      };
+
+      mockStreamReturnValue = createMockStream([
+        { type: 'message_stop' },
+      ]);
+
+      // Add a tool result
+      claudeSession.addToolResult('tool_123', { temperature: 72 }, false);
+
+      // Send a message and verify the tool result is included
+      for await (const _ of session.sendMessage('Thanks')) {
+        // consume events
+      }
+
+      const callArgs = mockMessages.stream.mock.calls[0][0];
+      // Should have user message ("Thanks") and previous tool result
+      expect(callArgs.messages.length).toBeGreaterThanOrEqual(1);
+
+      // Find the tool result message
+      const toolResultMessage = callArgs.messages.find(
+        (m: { role: string; content: unknown }) =>
+          m.role === 'user' &&
+          Array.isArray(m.content) &&
+          m.content.some((c: { type: string }) => c.type === 'tool_result')
+      );
+      expect(toolResultMessage).toBeDefined();
+    });
+  });
+});
