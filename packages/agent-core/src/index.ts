@@ -5,57 +5,108 @@
 // Types and Enums
 // ============================================================================
 
+/**
+ * Represents the current state of a task in the state machine.
+ * Transitions follow: idle -> planning -> (awaiting_approval) -> executing -> completed/failed
+ * cancelled can be reached from any non-terminal state.
+ */
 export type TaskState =
-  | 'idle'
-  | 'planning'
-  | 'awaiting_approval'
-  | 'executing'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
+  | 'idle'       // Task created, not yet started
+  | 'planning'   // AI is creating execution plan
+  | 'awaiting_approval' // Plan created, waiting for user approval
+  | 'executing'  // Plan approved, executing steps
+  | 'completed'  // All steps completed successfully
+  | 'failed'     // Execution failed (terminal state)
+  | 'cancelled'; // Task was cancelled (terminal state)
 
+/**
+ * Status of an individual plan step.
+ */
 export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
 
+/**
+ * Represents a task managed by the TaskEngine.
+ */
 export interface Task {
+  /** Unique identifier for this task */
   id: string;
+  /** Session this task belongs to */
   sessionId: string;
+  /** Current state in the state machine */
   state: TaskState;
+  /** Execution plan (set during planning state) */
   plan?: ExecutionPlan;
+  /** Index of currently executing step, -1 if not started */
   currentStepIndex: number;
+  /** Runtime context for this task */
   context: AgentContext;
+  /** Error message if state is 'failed' */
   error?: string;
+  /** When the task was created */
   createdAt: Date;
+  /** When the task was last updated */
   updatedAt: Date;
+  /** When the task reached a terminal state (completed/failed/cancelled) */
   completedAt?: Date;
 }
 
+/**
+ * An execution plan containing a sequence of steps to complete a task.
+ */
 export interface ExecutionPlan {
+  /** Unique identifier for this plan */
   id: string;
+  /** Steps in execution order */
   steps: PlanStep[];
+  /** Estimated duration in milliseconds (optional) */
   estimatedDuration?: number;
+  /** Whether steps can be executed in parallel (future feature) */
   parallelExecution: boolean;
+  /** Additional plan metadata */
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * A single step in an execution plan.
+ */
 export interface PlanStep {
+  /** Unique identifier for this step */
   id: string;
+  /** Human-readable description of what this step does */
   description: string;
+  /** Name of the tool to execute (if any) */
   toolName?: string;
+  /** Input parameters for the tool */
   toolInput?: unknown;
+  /** Whether this step requires user approval before execution */
   requiresApproval: boolean;
+  /** IDs of steps that must complete before this step can run */
   dependencies: string[];
+  /** Current execution status */
   status: StepStatus;
+  /** Position in the plan sequence */
   order: number;
+  /** When step execution started */
   startedAt?: Date;
+  /** Execution time in milliseconds */
   executionTimeMs?: number;
+  /** Error message if step failed */
   error?: string;
+  /** Output data from successful execution */
   output?: unknown;
 }
 
+/**
+ * Runtime context passed to tasks during execution.
+ */
 export interface AgentContext {
+  /** Root directory for file operations (security boundary) */
   workspaceRoot: string;
+  /** Session ID for correlation */
   sessionId: string;
+  /** AbortController for cancellation support */
   abortController: AbortController;
+  /** Additional runtime metadata (not persisted) */
   metadata: Map<string, unknown>;
 }
 
@@ -146,11 +197,19 @@ export type PersistenceErrorHandler = (error: Error, operation: 'create' | 'upda
 // Storage Integration Interface
 // ============================================================================
 
+/**
+ * Interface for task persistence. Implementations handle storage backend details.
+ */
 export interface TaskStorage {
+  /** Persist a new task */
   createTask(task: Task): Promise<void>;
+  /** Update an existing task */
   updateTask(task: Task): Promise<void>;
+  /** Retrieve a task by ID */
   getTask(id: string): Promise<Task | undefined>;
+  /** Retrieve all tasks for a session */
   getTasksBySession(sessionId: string): Promise<Task[]>;
+  /** Delete a task */
   deleteTask(id: string): Promise<void>;
 }
 
@@ -320,6 +379,33 @@ export class TaskEngine {
     return Array.from(this.tasks.values());
   }
 
+  /**
+   * Delete a task from memory and storage
+   */
+  async deleteTask(taskId: string): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      throw new TaskNotFoundError(taskId);
+    }
+
+    // Delete from storage if persistence is enabled
+    if (this.enablePersistence && this.storage) {
+      try {
+        await this.storage.deleteTask(taskId);
+      } catch (error) {
+        if (this.onPersistenceError) {
+          this.onPersistenceError(error instanceof Error ? error : new Error(String(error)), 'update', task);
+        } else {
+          console.error('Failed to delete task from storage:', error);
+        }
+        throw error;
+      }
+    }
+
+    // Delete from memory
+    this.tasks.delete(taskId);
+  }
+
   // ========================================================================
   // State Transitions
   // ========================================================================
@@ -339,14 +425,14 @@ export class TaskEngine {
 
     const currentState = task.state;
 
+    // Check if task has been cancelled (fail fast)
+    if (task.context.abortController.signal.aborted && newState !== 'cancelled') {
+      throw new TaskCancelledError(taskId);
+    }
+
     // Validate transition
     if (!this.isValidTransition(currentState, newState)) {
       throw new StateTransitionError(taskId, currentState, newState);
-    }
-
-    // Check if task has been cancelled
-    if (task.context.abortController.signal.aborted && newState !== 'cancelled') {
-      throw new TaskCancelledError(taskId);
     }
 
     // Update state

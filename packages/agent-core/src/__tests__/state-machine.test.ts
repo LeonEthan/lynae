@@ -89,6 +89,42 @@ describe('TaskEngine', () => {
       const session2Tasks = engine.getTasksBySession('session-2');
       expect(session2Tasks).toHaveLength(1);
     });
+
+    it('should get all tasks', () => {
+      engine.createTask('session-1', '/workspace1');
+      engine.createTask('session-2', '/workspace2');
+      engine.createTask('session-3', '/workspace3');
+
+      const allTasks = engine.getAllTasks();
+      expect(allTasks).toHaveLength(3);
+    });
+
+    it('should delete a task', async () => {
+      const task = engine.createTask('session-1', '/workspace');
+      expect(engine.getTask(task.id)).toBeDefined();
+
+      await engine.deleteTask(task.id);
+      expect(engine.getTask(task.id)).toBeUndefined();
+    });
+
+    it('should throw when deleting non-existent task', async () => {
+      await expect(engine.deleteTask('non-existent')).rejects.toThrow(
+        TaskNotFoundError
+      );
+    });
+
+    it('should allow setting storage after initialization', () => {
+      const newEngine = new TaskEngine({ enablePersistence: false });
+      newEngine.createTask('session-1', '/workspace');
+
+      // Enable persistence by setting storage
+      newEngine.setStorage(storage);
+      newEngine.setPersistenceEnabled(true);
+
+      // Should now persist changes
+      const task = newEngine.createTask('session-1', '/workspace');
+      expect(newEngine.getTask(task.id)).toBeDefined();
+    });
   });
 
   describe('Valid State Transitions', () => {
@@ -589,8 +625,9 @@ describe('TaskEngine', () => {
       engine.transitionState(task.id, 'planning');
       engine.cancelTask(task.id);
 
+      // After cancellation, any transition attempt throws TaskCancelledError
       expect(() => engine.transitionState(task.id, 'executing')).toThrow(
-        StateTransitionError
+        TaskCancelledError
       );
     });
 
@@ -607,6 +644,19 @@ describe('TaskEngine', () => {
       engine.cancelTask(task.id);
 
       expect(() => engine.checkCancelled(task.id)).toThrow(TaskCancelledError);
+    });
+
+    it('should check cancellation before validating transition (fail fast)', () => {
+      // Create and cancel a task directly
+      const task = engine.createTask('session-1', '/workspace');
+      engine.cancelTask(task.id);
+
+      // Attempt an invalid transition (cancelled -> executing)
+      // Should throw TaskCancelledError, NOT StateTransitionError
+      // because cancellation check happens first
+      expect(() => engine.transitionState(task.id, 'executing')).toThrow(
+        TaskCancelledError
+      );
     });
   });
 
