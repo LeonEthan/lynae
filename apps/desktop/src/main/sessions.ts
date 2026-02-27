@@ -49,9 +49,12 @@ export function deleteSession(sessionId: string): void {
 
   sessions.delete(sessionId)
 
-  // If we deleted the active session, clear it or switch to another
+  // If we deleted the active session, switch to the most recently updated one
+  // Sort by updatedAt descending to match getSessions() order
   if (activeSessionId === sessionId) {
-    const remaining = Array.from(sessions.values())
+    const remaining = Array.from(sessions.values()).sort(
+      (a, b) => b.updatedAt - a.updatedAt
+    )
     activeSessionId = remaining.length > 0 ? remaining[0].id : null
   }
 }

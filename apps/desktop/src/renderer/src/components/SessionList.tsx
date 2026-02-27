@@ -33,10 +33,17 @@ export function SessionList({
           <div className="empty-state">No sessions yet</div>
         ) : (
           sessions.map((session) => (
-            <div
+            <button
               key={session.id}
               className={`session-item ${session.id === activeSessionId ? 'active' : ''}`}
               onClick={() => onSelectSession(session.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onSelectSession(session.id)
+                }
+              }}
+              aria-pressed={session.id === activeSessionId}
             >
               <div className="session-info">
                 <div className="session-name">{session.name}</div>
@@ -50,11 +57,17 @@ export function SessionList({
                   e.stopPropagation()
                   onDeleteSession(session.id)
                 }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.stopPropagation()
+                  }
+                }}
                 title="Delete session"
+                aria-label={`Delete session ${session.name}`}
               >
                 ×
               </button>
-            </div>
+            </button>
           ))
         )}
       </div>
