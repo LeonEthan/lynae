@@ -11,8 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "pretest:e2e": "pnpm run build",
-    "test:e2e": "playwright test",
+    "test:e2e": "pnpm run build && playwright test",
     "test:e2e:ui": "playwright test --ui",
     "clean": "node ../../scripts/clean.mjs dist"
   },

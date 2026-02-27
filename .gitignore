@@ -39,6 +39,9 @@ venv/
 .cache/
 .tmp/
 tmp/
+test-results/
+playwright-report/
+blob-report/
 
 # Turbo
 .turbo/
