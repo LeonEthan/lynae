@@ -11,25 +11,35 @@ import {
 } from '../index.js';
 
 // Mock storage for testing - uses SerializableTask (no runtime context)
+// Uses deep cloning to ensure strict persistence verification (no aliasing)
 class MockStorage implements TaskStorage {
   private tasks = new Map<string, SerializableTask>();
 
+  private deepClone<T>(obj: T): T {
+    return JSON.parse(JSON.stringify(obj));
+  }
+
   async createTask(task: SerializableTask): Promise<void> {
-    this.tasks.set(task.id, { ...task });
+    // Deep clone to prevent aliasing between engine and storage
+    this.tasks.set(task.id, this.deepClone(task));
   }
 
   async updateTask(task: SerializableTask): Promise<void> {
-    this.tasks.set(task.id, { ...task });
+    // Deep clone to prevent aliasing between engine and storage
+    this.tasks.set(task.id, this.deepClone(task));
   }
 
   async getTask(id: string): Promise<SerializableTask | undefined> {
-    return this.tasks.get(id);
+    const task = this.tasks.get(id);
+    // Return a clone to prevent external mutation of stored data
+    return task ? this.deepClone(task) : undefined;
   }
 
   async getTasksBySession(sessionId: string): Promise<SerializableTask[]> {
-    return Array.from(this.tasks.values()).filter(
-      (t) => t.sessionId === sessionId
-    );
+    return Array.from(this.tasks.values())
+      .filter((t) => t.sessionId === sessionId)
+      // Return clones to prevent external mutation of stored data
+      .map((t) => this.deepClone(t));
   }
 
   async deleteTask(id: string): Promise<void> {
