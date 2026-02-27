@@ -28,7 +28,7 @@ export function SessionList({
         </button>
       </div>
 
-      <ul className="session-items" role="listbox" aria-label="Sessions">
+      <ul className="session-items">
         {sessions.length === 0 ? (
           <li className="empty-state">No sessions yet</li>
         ) : (
@@ -36,8 +36,6 @@ export function SessionList({
             <li
               key={session.id}
               className={`session-item ${session.id === activeSessionId ? 'active' : ''}`}
-              role="option"
-              aria-selected={session.id === activeSessionId}
             >
               <button
                 className="session-content"
