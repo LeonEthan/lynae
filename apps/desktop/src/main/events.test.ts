@@ -106,6 +106,7 @@ describe('events', () => {
 
     it('handles subscriber errors gracefully', () => {
       __resetEvents()
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       const errorHandler = vi.fn(() => {
         throw new Error('Handler error')
       })
@@ -120,6 +121,10 @@ describe('events', () => {
       }).not.toThrow()
 
       expect(goodHandler).toHaveBeenCalledTimes(1)
+      // Verify error was logged
+      expect(consoleErrorSpy).toHaveBeenCalledWith('Error in event stream handler:', expect.any(Error))
+
+      consoleErrorSpy.mockRestore()
     })
   })
 

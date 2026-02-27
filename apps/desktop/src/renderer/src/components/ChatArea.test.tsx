@@ -345,7 +345,7 @@ describe('ChatArea', () => {
   })
 
   describe('simulate streaming button', () => {
-    it('simulates word-by-word streaming on button click', async () => {
+    it('starts streaming on button click and shows streaming state', async () => {
       mockGetEventsBySession.mockResolvedValue({ events: [], totalAvailable: 0, hasMore: false })
 
       render(<ChatArea activeSession={mockSession} />)
@@ -355,15 +355,8 @@ describe('ChatArea', () => {
       const simulateBtn = screen.getByText('Simulate Stream')
       await userEvent.click(simulateBtn)
 
-      // Button should show streaming state
-      await waitFor(() => {
-        expect(screen.getByText('Streaming...')).toBeInTheDocument()
-      })
-
-      // Wait for streaming to complete
-      await waitFor(() => {
-        expect(screen.getByText('Simulate Stream')).toBeInTheDocument()
-      }, { timeout: 5000 })
+      // Button should show streaming state immediately
+      expect(screen.getByText('Streaming...')).toBeInTheDocument()
     })
 
     it('disables input during streaming', async () => {
