@@ -16,17 +16,13 @@ export interface SessionListResponse {
   activeSessionId: string | null
 }
 
-// IPC API interface
-export interface ElectronAPI {
-  // Session management
-  getSessions: () => Promise<SessionListResponse>
-  createSession: (req?: CreateSessionRequest) => Promise<Session>
-  switchSession: (sessionId: string) => Promise<void>
-  deleteSession: (sessionId: string) => Promise<void>
+// Re-export PR-03 types
+export * from './events'
+export * from './ipc'
 
-  // Legacy placeholder
-  ping: () => Promise<string>
-}
+// IPC API interface (re-exported from ipc.ts for backwards compatibility)
+import type { ElectronAPI } from './ipc'
+export type { ElectronAPI }
 
 declare global {
   interface Window {
