@@ -45,27 +45,40 @@ export function ChatArea({ activeSession }: ChatAreaProps) {
   const [streamingText, setStreamingText] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const unsubscribeRef = useRef<(() => void) | null>(null)
+  const streamingTextRef = useRef('')
+  const sessionIdRef = useRef<string | null>(null)
 
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [events, streamingText])
 
+  // Keep refs in sync with state
+  useEffect(() => {
+    streamingTextRef.current = streamingText
+  }, [streamingText])
+
   // Subscribe to event stream when session changes
   useEffect(() => {
     if (!activeSession) {
       setEvents([])
       setStreamingText('')
+      streamingTextRef.current = ''
       setIsStreaming(false)
+      sessionIdRef.current = null
       return
     }
+
+    // Track the current session ID for race condition guard
+    sessionIdRef.current = activeSession.id
 
     // Load existing events for this session
     loadSessionEvents(activeSession.id)
 
     // Subscribe to real-time events
     const unsubscribe = window.electronAPI.onEventStream((event) => {
-      if (event.sessionId === activeSession.id) {
+      // Race condition guard: only process events for the current session
+      if (event.sessionId === sessionIdRef.current) {
         handleIncomingEvent(event)
       }
     })
@@ -76,12 +89,15 @@ export function ChatArea({ activeSession }: ChatAreaProps) {
       unsubscribe()
       unsubscribeRef.current = null
     }
-  }, [activeSession])
+  }, [activeSession?.id])
 
   const loadSessionEvents = async (sessionId: string) => {
     try {
       const result = await window.electronAPI.getEventsBySession(sessionId)
-      setEvents(result.events.map(e => ({ ...e, displayText: buildDisplayText(e) })))
+      // Race condition guard: only update if this is still the current session
+      if (sessionId === sessionIdRef.current) {
+        setEvents(result.events.map(e => ({ ...e, displayText: buildDisplayText(e) })))
+      }
     } catch (error) {
       console.error('Failed to load events:', error)
     }
@@ -94,22 +110,29 @@ export function ChatArea({ activeSession }: ChatAreaProps) {
       if (runtimeEvent.type === 'runtime:start') {
         setIsStreaming(true)
         setStreamingText('')
+        streamingTextRef.current = ''
       } else if (runtimeEvent.type === 'runtime:text' && runtimeEvent.content?.type === 'text') {
         const textContent = runtimeEvent.content as { type: 'text'; text: string }
-        setStreamingText(prev => prev + textContent.text)
+        streamingTextRef.current += textContent.text
+        setStreamingText(streamingTextRef.current)
       } else if (runtimeEvent.type === 'runtime:complete') {
         setIsStreaming(false)
+        // Use ref to get latest value, avoiding stale closure
+        const finalText = streamingTextRef.current
         setStreamingText('')
-        setEvents(prev => [...prev, { ...event, displayText: streamingText }])
+        streamingTextRef.current = ''
+        setEvents(prev => [...prev, { ...event, displayText: finalText }])
       } else if (runtimeEvent.type === 'runtime:thinking') {
-        setStreamingText(prev => prev + renderEventContent(runtimeEvent.content))
+        const thinkingText = renderEventContent(runtimeEvent.content)
+        streamingTextRef.current += thinkingText
+        setStreamingText(streamingTextRef.current)
       } else {
         setEvents(prev => [...prev, { ...event, displayText: renderEventContent(runtimeEvent.content) }])
       }
     } else {
       setEvents(prev => [...prev, { ...event, displayText: buildDisplayText(event) }])
     }
-  }, [streamingText])
+  }, [])
 
   const buildDisplayText = (event: Event): string => {
     if (isRuntimeEvent(event)) {
@@ -132,6 +155,7 @@ export function ChatArea({ activeSession }: ChatAreaProps) {
 
     setIsStreaming(true)
     setStreamingText('')
+    streamingTextRef.current = ''
 
     // Simulate streaming text word by word
     const message = "I can help you with that. Let me analyze the codebase structure and provide insights."
@@ -139,7 +163,9 @@ export function ChatArea({ activeSession }: ChatAreaProps) {
 
     for (let i = 0; i < words.length; i++) {
       await new Promise(resolve => setTimeout(resolve, 100))
-      setStreamingText(prev => prev + (i > 0 ? ' ' : '') + words[i])
+      const chunk = (i > 0 ? ' ' : '') + words[i]
+      streamingTextRef.current += chunk
+      setStreamingText(streamingTextRef.current)
     }
 
     await new Promise(resolve => setTimeout(resolve, 300))
@@ -149,13 +175,14 @@ export function ChatArea({ activeSession }: ChatAreaProps) {
       sessionId: activeSession.id,
       timestamp: Date.now(),
       sequence: Date.now(),
-      displayText: message,
-      content: { type: 'text', text: message },
+      displayText: streamingTextRef.current,
+      content: { type: 'text', text: streamingTextRef.current },
       isComplete: true,
     } as DisplayEvent])
 
     setIsStreaming(false)
     setStreamingText('')
+    streamingTextRef.current = ''
   }
 
   if (!activeSession) {

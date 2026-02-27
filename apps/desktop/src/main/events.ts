@@ -23,10 +23,6 @@ let eventSequenceCounter = 0
 // Event creation helpers
 // ============================================================================
 
-function generateEventId(): string {
-  return `evt_${Date.now()}_${++eventSequenceCounter}`
-}
-
 interface BaseEventFields {
   id: string
   sessionId: string
@@ -35,11 +31,13 @@ interface BaseEventFields {
 }
 
 function createBaseEvent(sessionId: string): BaseEventFields {
+  // Single increment per event for both ID uniqueness and sequence ordering
+  const nextSequence = ++eventSequenceCounter
   return {
-    id: generateEventId(),
+    id: `evt_${Date.now()}_${nextSequence}`,
     sessionId,
     timestamp: Date.now(),
-    sequence: ++eventSequenceCounter,
+    sequence: nextSequence,
   }
 }
 
@@ -151,7 +149,8 @@ export function createRuntimeEvent(
     error,
   } as RuntimeEvent
 
-  storeEvent(event)
+  // Broadcast to all subscribers (stores and broadcasts)
+  broadcastEvent(event)
   return event
 }
 
