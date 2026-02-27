@@ -1,17 +1,13 @@
 import type { Session, SessionListResponse, CreateSessionRequest } from '../types'
 
+// Internal session type with sequence for deterministic sorting
+type InternalSession = Session & { sequence: number }
+
 // In-memory session store (will be replaced with SQLite in PR-04)
-const sessions: Map<string, Session> = new Map()
+const sessions: Map<string, InternalSession> = new Map()
 let activeSessionId: string | null = null
 let sessionCounter = 0
-let timestampCounter = 0
-
-// Generate a monotonically increasing timestamp with micro-precision
-// Format: Date.now() * 1000 + counter (0-999)
-// This ensures unique, sortable timestamps even within the same millisecond
-function generateTimestamp(): number {
-  return Date.now() * 1000 + (++timestampCounter % 1000)
-}
+let sequenceCounter = 0
 
 function generateId(): string {
   return `session_${Date.now()}_${++sessionCounter}`
@@ -21,20 +17,28 @@ function generateName(): string {
   return `New Session ${sessionCounter}`
 }
 
+// Sort comparator: primary by updatedAt desc, secondary by sequence desc for deterministic ordering
+function sortByRecent(a: InternalSession, b: InternalSession): number {
+  const timeDiff = b.updatedAt - a.updatedAt
+  if (timeDiff !== 0) return timeDiff
+  return b.sequence - a.sequence
+}
+
 export function getSessions(): SessionListResponse {
   return {
-    sessions: Array.from(sessions.values()).sort((a, b) => b.updatedAt - a.updatedAt),
+    sessions: Array.from(sessions.values()).sort(sortByRecent),
     activeSessionId,
   }
 }
 
 export function createSession(req?: CreateSessionRequest): Session {
-  const now = generateTimestamp()
-  const session: Session = {
+  const now = Date.now()
+  const session: InternalSession = {
     id: generateId(),
     name: req?.name || generateName(),
     createdAt: now,
     updatedAt: now,
+    sequence: ++sequenceCounter,
   }
 
   sessions.set(session.id, session)
@@ -49,9 +53,10 @@ export function switchSession(sessionId: string): void {
   }
   activeSessionId = sessionId
 
-  // Update updatedAt so the active session appears first in the sorted list
+  // Update updatedAt and sequence so the active session appears first in the sorted list
   const session = sessions.get(sessionId)!
-  session.updatedAt = generateTimestamp()
+  session.updatedAt = Date.now()
+  session.sequence = ++sequenceCounter
 }
 
 export function deleteSession(sessionId: string): void {
@@ -64,9 +69,7 @@ export function deleteSession(sessionId: string): void {
   // If we deleted the active session, switch to the most recently updated one
   // Sort by updatedAt descending to match getSessions() order
   if (activeSessionId === sessionId) {
-    const remaining = Array.from(sessions.values()).sort(
-      (a, b) => b.updatedAt - a.updatedAt
-    )
+    const remaining = Array.from(sessions.values()).sort(sortByRecent)
     activeSessionId = remaining.length > 0 ? remaining[0].id : null
   }
 }
@@ -86,5 +89,5 @@ export function __resetSessions(): void {
   sessions.clear()
   activeSessionId = null
   sessionCounter = 0
-  timestampCounter = 0
+  sequenceCounter = 0
 }
