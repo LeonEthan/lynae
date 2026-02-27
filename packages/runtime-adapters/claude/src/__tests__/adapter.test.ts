@@ -627,4 +627,109 @@ describe('ClaudeAdapter', () => {
       expect(toolResultMessage).toBeDefined();
     });
   });
+
+  describe('conversation history trimming', () => {
+    it('should trim history when exceeding maxHistoryMessages', async () => {
+      // Use a small limit for testing
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+        maxHistoryMessages: 4, // Allow only 4 messages (2 exchanges)
+      };
+
+      const session = await adapter.createSession(config);
+
+      // Cast to access internal state
+      const claudeSession = session as unknown as {
+        sendMessage(message: string): AsyncIterable<RuntimeEvent>;
+      };
+
+      // Simulate multiple message exchanges
+      for (let i = 0; i < 5; i++) {
+        mockMessages.stream.mockImplementation(() => createMockStream([
+          { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+          { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `Response ${i}` } },
+          { type: 'content_block_stop', index: 0 },
+          { type: 'message_stop' },
+        ]));
+
+        for await (const _ of claudeSession.sendMessage(`Message ${i}`)) {
+          // consume events
+        }
+      }
+
+      // Trimming happens when a user message is added, but the assistant response
+      // is added after. So we can have at most maxHistoryMessages + 1 temporarily.
+      // After many exchanges, the history should be bounded.
+      const lastCall = mockMessages.stream.mock.calls[4];
+      // Should be trimmed to at most maxHistoryMessages (4) at the start of sendMessage
+      expect(lastCall[0].messages.length).toBeLessThanOrEqual(5);
+      // Verify we have at least the most recent messages
+      expect(lastCall[0].messages.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('should use default limit of 100 when maxHistoryMessages not specified', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+        // maxHistoryMessages not specified - should use default of 100
+      };
+
+      const session = await adapter.createSession(config);
+
+      // Cast to access internal state
+      const claudeSession = session as unknown as {
+        sendMessage(message: string): AsyncIterable<RuntimeEvent>;
+      };
+
+      // Simulate a few exchanges - should not be trimmed with default limit
+      for (let i = 0; i < 3; i++) {
+        mockMessages.stream.mockImplementation(() => createMockStream([
+          { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+          { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `Response ${i}` } },
+          { type: 'content_block_stop', index: 0 },
+          { type: 'message_stop' },
+        ]));
+
+        for await (const _ of claudeSession.sendMessage(`Message ${i}`)) {
+          // consume events
+        }
+      }
+
+      // All 6 messages (3 user + 3 assistant) should be preserved
+      const lastCall = mockMessages.stream.mock.calls[2];
+      expect(lastCall[0].messages.length).toBe(6);
+    });
+
+    it('should trim history after adding tool results', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+        maxHistoryMessages: 2,
+      };
+
+      const session = await adapter.createSession(config);
+
+      // Cast to access internal methods
+      const claudeSession = session as unknown as {
+        addToolResult(toolUseId: string, output: unknown, isError?: boolean): void;
+        sendMessage(message: string): AsyncIterable<RuntimeEvent>;
+      };
+
+      // Add multiple tool results
+      for (let i = 0; i < 5; i++) {
+        claudeSession.addToolResult(`tool_${i}`, { result: i });
+      }
+
+      mockMessages.stream.mockImplementation(() => createMockStream([
+        { type: 'message_stop' },
+      ]));
+
+      // Send a message to trigger history check
+      for await (const _ of claudeSession.sendMessage('Final message')) {
+        // consume events
+      }
+
+      // History should be trimmed to at most 2 messages
+      const lastCall = mockMessages.stream.mock.calls[0];
+      expect(lastCall[0].messages.length).toBeLessThanOrEqual(2);
+    });
+  });
 });
