@@ -6,6 +6,13 @@ let activeSessionId: string | null = null
 let sessionCounter = 0
 let timestampCounter = 0
 
+// Generate a monotonically increasing timestamp with micro-precision
+// Format: Date.now() * 1000 + counter (0-999)
+// This ensures unique, sortable timestamps even within the same millisecond
+function generateTimestamp(): number {
+  return Date.now() * 1000 + (++timestampCounter % 1000)
+}
+
 function generateId(): string {
   return `session_${Date.now()}_${++sessionCounter}`
 }
@@ -22,7 +29,7 @@ export function getSessions(): SessionListResponse {
 }
 
 export function createSession(req?: CreateSessionRequest): Session {
-  const now = Date.now()
+  const now = generateTimestamp()
   const session: Session = {
     id: generateId(),
     name: req?.name || generateName(),
@@ -42,11 +49,9 @@ export function switchSession(sessionId: string): void {
   }
   activeSessionId = sessionId
 
-  // Update updatedAt with a micro-timestamp so the active session appears
-  // first in the sorted list. Using Date.now() + increment ensures deterministic
-  // ordering even when multiple operations happen in the same millisecond.
+  // Update updatedAt so the active session appears first in the sorted list
   const session = sessions.get(sessionId)!
-  session.updatedAt = Date.now() * 1000 + (++timestampCounter % 1000)
+  session.updatedAt = generateTimestamp()
 }
 
 export function deleteSession(sessionId: string): void {
@@ -81,4 +86,5 @@ export function __resetSessions(): void {
   sessions.clear()
   activeSessionId = null
   sessionCounter = 0
+  timestampCounter = 0
 }
