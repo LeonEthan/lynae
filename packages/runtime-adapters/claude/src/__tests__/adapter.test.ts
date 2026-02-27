@@ -72,6 +72,11 @@ function isErrorEvent(event: RuntimeEvent): event is { type: 'error'; message: s
   return event.type === 'error';
 }
 
+// Type guard for usage events
+function isUsageEvent(event: RuntimeEvent): event is { type: 'usage'; inputTokens: number; outputTokens: number } {
+  return event.type === 'usage';
+}
+
 // Import after mocking
 const { ClaudeAdapter: ClaudeAdapterClass } = await import('../index.js');
 
@@ -221,6 +226,85 @@ describe('ClaudeAdapter', () => {
       expect(textEvents[0].content).toBe('First');
       expect(textEvents[1].content).toBe('Second');
       expect(textEvents[2].content).toBe('Third');
+    });
+
+    it('should yield usage event with token counts', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      // Mock stream with usage information from message_start and message_delta events
+      mockMessages.stream.mockImplementationOnce(() =>
+        ({
+          async *[Symbol.asyncIterator]() {
+            // message_start contains input token usage
+            yield {
+              type: 'message_start',
+              message: {
+                id: 'msg_123',
+                type: 'message',
+                role: 'assistant',
+                content: [],
+                model: 'claude-3-5-sonnet-latest',
+                stop_reason: null,
+                stop_sequence: null,
+                usage: {
+                  input_tokens: 150,
+                  output_tokens: 0,
+                },
+              },
+            };
+            yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } };
+            yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } };
+            yield { type: 'content_block_stop', index: 0 };
+            // message_delta contains output token usage (cumulative)
+            yield {
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn', stop_sequence: null },
+              usage: { output_tokens: 42 },
+            };
+            yield { type: 'message_stop' };
+          },
+        })
+      );
+
+      const events: RuntimeEvent[] = [];
+      for await (const event of session.sendMessage('Hi')) {
+        events.push(event);
+      }
+
+      const usageEvent = events.find(isUsageEvent);
+      expect(usageEvent).toBeDefined();
+      expect(usageEvent?.inputTokens).toBe(150);
+      expect(usageEvent?.outputTokens).toBe(42);
+    });
+
+    it('should handle missing usage information gracefully', async () => {
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+      };
+
+      const session = await adapter.createSession(config);
+
+      // Mock stream without usage information (no message_start with usage or message_delta)
+      mockStreamReturnValue = createMockStream([
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ]);
+
+      const events: RuntimeEvent[] = [];
+      for await (const event of session.sendMessage('Hi')) {
+        events.push(event);
+      }
+
+      // Should not have a usage event but should complete normally
+      const usageEvent = events.find(isUsageEvent);
+      expect(usageEvent).toBeUndefined();
+      expect(events.some((e) => e.type === 'done')).toBe(true);
     });
   });
 

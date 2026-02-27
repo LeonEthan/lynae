@@ -97,6 +97,7 @@ export type RuntimeEvent =
   | { type: 'text'; content: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; tool_use_id: string; output: unknown }
+  | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'error'; message: string }
   | { type: 'done' };
 
@@ -207,6 +208,8 @@ class ClaudeSession implements AgentSession {
       let currentTextBlock: { type: 'text'; text: string } | null = null;
       let currentToolUseBlock: Anthropic.Messages.ToolUseBlock | null = null;
       let accumulatedJson = '';
+      let inputTokens = 0;
+      let outputTokens = 0;
 
       // The stream is an async iterable - iterate over it directly
       for await (const event of stream) {
@@ -218,7 +221,19 @@ class ClaudeSession implements AgentSession {
         // Handle the event based on type
         const eventType = event.type;
 
-        if (eventType === 'content_block_start') {
+        if (eventType === 'message_start') {
+          const startEvent = event as Anthropic.Messages.RawMessageStartEvent;
+          // Capture input tokens from the initial message
+          if (startEvent.message?.usage?.input_tokens) {
+            inputTokens = startEvent.message.usage.input_tokens;
+          }
+        } else if (eventType === 'message_delta') {
+          const deltaEvent = event as Anthropic.Messages.RawMessageDeltaEvent;
+          // Capture output tokens from the delta (cumulative)
+          if (deltaEvent.usage?.output_tokens) {
+            outputTokens = deltaEvent.usage.output_tokens;
+          }
+        } else if (eventType === 'content_block_start') {
           const startEvent = event as Anthropic.Messages.RawContentBlockStartEvent;
           const block = startEvent.content_block;
           if (block.type === 'text') {
@@ -297,6 +312,15 @@ class ClaudeSession implements AgentSession {
             });
           }
         }
+      }
+
+      // Yield token usage information if we collected any
+      if (inputTokens > 0 || outputTokens > 0) {
+        yield {
+          type: 'usage',
+          inputTokens,
+          outputTokens,
+        };
       }
 
       yield { type: 'done' };
