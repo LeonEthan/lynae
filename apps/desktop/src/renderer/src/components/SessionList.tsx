@@ -23,6 +23,7 @@ export function SessionList({
           className="new-session-btn"
           onClick={onCreateSession}
           title="Create new session"
+          aria-label="Create new session"
         >
           +
         </button>
