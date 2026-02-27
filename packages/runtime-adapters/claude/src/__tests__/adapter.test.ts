@@ -365,6 +365,66 @@ describe('ClaudeAdapter', () => {
         input: {},
       });
     });
+
+    it('should handle invalid JSON in tool input gracefully', async () => {
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const config: SessionConfig = {
+        workspaceRoot: '/test/workspace',
+        tools: [
+          {
+            name: 'test_tool',
+            description: 'A test tool',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+      };
+
+      const session = await adapter.createSession(config);
+
+      // Simulate invalid JSON in the tool input stream
+      mockStreamReturnValue = createMockStream([
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tool_invalid', name: 'test_tool', input: {} },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{invalid json' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ]);
+
+      const events: RuntimeEvent[] = [];
+      for await (const event of session.sendMessage('Use tool with invalid JSON')) {
+        events.push(event);
+      }
+
+      // Should still yield a tool_use event with empty input
+      const toolUseEvent = events.find((e): e is { type: 'tool_use'; id: string; name: string; input: unknown } =>
+        e.type === 'tool_use'
+      );
+      expect(toolUseEvent).toBeDefined();
+      expect(toolUseEvent).toMatchObject({
+        type: 'tool_use',
+        id: 'tool_invalid',
+        name: 'test_tool',
+        input: {},
+      });
+
+      // Should log a warning with details about the parse failure
+      expect(consoleWarnSpy).toHaveBeenCalled();
+      const warnCall = consoleWarnSpy.mock.calls[0][0];
+      expect(warnCall).toContain('Failed to parse tool input JSON');
+      expect(warnCall).toContain('test_tool');
+      expect(warnCall).toContain('tool_invalid');
+      expect(warnCall).toContain('{invalid json');
+
+      consoleWarnSpy.mockRestore();
+    });
   });
 
   describe('error handling', () => {
