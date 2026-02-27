@@ -22,6 +22,13 @@ describe('sessions', () => {
       expect(session.updatedAt).toBeDefined()
     })
 
+    it('does not expose internal sequence field', () => {
+      const session = createSession()
+
+      expect('sequence' in session).toBe(false)
+      expect(Object.keys(session)).not.toContain('sequence')
+    })
+
     it('creates a session with custom name', () => {
       const session = createSession({ name: 'My Custom Session' })
 
@@ -72,6 +79,17 @@ describe('sessions', () => {
       const { activeSessionId } = getSessions()
 
       expect(activeSessionId).toBe(session.id)
+    })
+
+    it('does not expose internal sequence field in sessions', () => {
+      createSession()
+      createSession()
+
+      const { sessions } = getSessions()
+      for (const session of sessions) {
+        expect('sequence' in session).toBe(false)
+        expect(Object.keys(session)).not.toContain('sequence')
+      }
     })
   })
 
