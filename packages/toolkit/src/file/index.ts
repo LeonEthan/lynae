@@ -48,13 +48,13 @@ async function atomicWriteFile(filePath: string, content: string, encoding: Buff
     await writeFile(tempPath, content, { encoding });
     await rename(tempPath, filePath);
   } catch (error) {
-    // Clean up temp file on error
+    // Clean up temp file on error, then re-throw original error
     try {
       await unlink(tempPath);
     } catch {
       // Ignore cleanup errors
     }
-    throw error;
+    throw error; // Re-throw to preserve stack trace
   }
 }
 
@@ -97,6 +97,33 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+/**
+ * Process files with limited concurrency for better I/O throughput.
+ * Uses Promise.all for batches of files to parallelize while controlling memory.
+ */
+async function processFilesWithLimit<T>(
+  files: string[],
+  processor: (file: string) => Promise<T[]>,
+  limit: number
+): Promise<T[]> {
+  const results: T[] = [];
+  const CONCURRENCY = 10; // Process 10 files at a time
+
+  for (let i = 0; i < files.length && results.length < limit; i += CONCURRENCY) {
+    const batch = files.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(batch.map(processor));
+
+    for (const fileResults of batchResults) {
+      results.push(...fileResults);
+      if (results.length >= limit) {
+        return results.slice(0, limit);
+      }
+    }
+  }
+
+  return results;
+}
+
 // ============================================================================
 // File Read Tool
 // ============================================================================
@@ -125,19 +152,20 @@ export const FileReadTool: Tool = {
       throw new PathValidationError(requestedPath, context.workspaceRoot, validation.reason);
     }
 
-    // Check if file exists
-    if (!(await fileExists(validation.resolvedPath))) {
-      throw new Error(`FILE_NOT_FOUND: File "${requestedPath}" does not exist`);
+    // Read file content (ENOENT will be thrown if file doesn't exist)
+    try {
+      const { content, size } = await readFileContent(validation.resolvedPath, encoding);
+      return {
+        content,
+        encoding,
+        size,
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`FILE_NOT_FOUND: File "${requestedPath}" does not exist`);
+      }
+      throw error;
     }
-
-    // Read file content
-    const { content, size } = await readFileContent(validation.resolvedPath, encoding);
-
-    return {
-      content,
-      encoding,
-      size,
-    };
   },
 };
 
@@ -183,9 +211,8 @@ export const FileWriteTool: Tool = {
 
     // Read original content if file exists (for diff)
     let originalContent: string | null = null;
-    let isNewFile = true;
 
-    if (await fileExists(resolvedPath)) {
+    try {
       const stats = await fs.promises.stat(resolvedPath);
       if (stats.isDirectory()) {
         throw new Error(`IS_DIRECTORY: "${requestedPath}" is a directory`);
@@ -194,11 +221,15 @@ export const FileWriteTool: Tool = {
       try {
         const { content: existingContent } = await readFileContent(resolvedPath, encoding);
         originalContent = existingContent;
-        isNewFile = false;
       } catch {
         // If we can't read the file, treat it as new
         originalContent = null;
       }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+      // File doesn't exist, originalContent stays null
     }
 
     // Create parent directories if needed
@@ -207,19 +238,8 @@ export const FileWriteTool: Tool = {
       await ensureDirectory(parentDir);
     }
 
-    // Decode content if base64
-    let fileContent: string;
-    if (encoding === 'base64') {
-      // Validate base64
-      try {
-        Buffer.from(content, 'base64');
-        fileContent = content;
-      } catch {
-        throw new Error('INVALID_ENCODING: Invalid base64 content');
-      }
-    } else {
-      fileContent = content;
-    }
+    // Content is already a string, Buffer encoding happens during write
+    const fileContent = content;
 
     // Perform atomic write
     const bufferEncoding = encoding === 'base64' ? 'base64' : encoding === 'latin1' ? 'latin1' : 'utf-8';
@@ -229,6 +249,7 @@ export const FileWriteTool: Tool = {
     const bytes = Buffer.byteLength(fileContent, bufferEncoding);
 
     // Generate diff if this was an update
+    const isNewFile = originalContent === null;
     const diff = !isNewFile ? generateDiff(originalContent, content) : undefined;
 
     return {
@@ -312,52 +333,45 @@ export const FileSearchTool: Tool = {
     // Apply limit to file results
     const files = allFiles.slice(0, limit);
 
-    const matches: FileSearchMatch[] = [];
+    // Process files with limited concurrency for better I/O throughput
+    const matches = await processFilesWithLimit(files, async (file) => {
+      // Validate each file is still within workspace (in case of symlinks)
+      const fileValidation = await validatePath(file, context.workspaceRoot);
+      if (!fileValidation.valid) {
+        return []; // Skip files outside workspace
+      }
 
-    // If content search is specified, search within files
-    if (contentSearch) {
-      for (const file of files) {
-        // Validate each file is still within workspace (in case of symlinks)
-        const fileValidation = await validatePath(file, context.workspaceRoot);
-        if (!fileValidation.valid) {
-          continue; // Skip files outside workspace
-        }
+      if (!contentSearch) {
+        // Just return file path
+        return [{ path: file }];
+      }
 
-        try {
-          const { content } = await readFileContent(file, 'utf-8');
+      // Search for content in file
+      try {
+        const { content } = await readFileContent(file, 'utf-8');
+        const fileMatches: FileSearchMatch[] = [];
 
-          // Search for content in file
-          const lines = content.split('\n');
-          for (let i = 0; i < lines.length && matches.length < limit; i++) {
-            const lineContent = lines[i];
-            const column = lineContent.indexOf(contentSearch);
+        // Search for content in file
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const lineContent = lines[i];
+          const column = lineContent.indexOf(contentSearch);
 
-            if (column !== -1) {
-              matches.push({
-                path: file,
-                line: i + 1,
-                content: lineContent.trim(),
-                column: column + 1,
-              });
-            }
+          if (column !== -1) {
+            fileMatches.push({
+              path: file,
+              line: i + 1,
+              content: lineContent.trim(),
+              column: column + 1,
+            });
           }
-        } catch {
-          // Skip files we can't read
-          continue;
         }
+        return fileMatches;
+      } catch {
+        // Skip files we can't read
+        return [];
       }
-    } else {
-      // Just return file paths
-      for (const file of files) {
-        // Validate each file is still within workspace
-        const fileValidation = await validatePath(file, context.workspaceRoot);
-        if (!fileValidation.valid) {
-          continue;
-        }
-
-        matches.push({ path: file });
-      }
-    }
+    }, limit);
 
     return {
       matches,
@@ -570,7 +584,8 @@ export const FileListTool: Tool = {
       for (const item of items) {
         const itemPath = path.join(resolvedPath, item.name);
 
-        // Validate entry is within workspace
+        // Security: Re-validate each entry to detect symlink escapes
+        // (directory entries could be symlinks pointing outside workspace)
         const entryValidation = await validatePath(itemPath, context.workspaceRoot);
         if (!entryValidation.valid) {
           continue;

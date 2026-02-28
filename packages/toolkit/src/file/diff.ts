@@ -77,6 +77,7 @@ function computeLineDiff(originalLines: string[], newLines: string[]): LineDiff[
   }
 
   // Build LCS (Longest Common Subsequence) matrix
+  // NOTE: This uses O(N*M) memory. Callers should check file size before calling.
   const dp: number[][] = Array(m + 1)
     .fill(null)
     .map(() => Array(n + 1).fill(0));
@@ -237,30 +238,43 @@ export function generateDiff(
     newLines.pop();
   }
 
-  // Compute line-by-line diff
-  const lineDiffs = computeLineDiff(originalLines, newLines);
+  // Skip detailed diff for very large files to avoid O(N*M) memory explosion
+  // For a 10,000 line file, the matrix would be ~400MB
+  const MAX_DIFF_LINES = 5000;
+  const skipDetailedDiff = originalLines.length > MAX_DIFF_LINES || newLines.length > MAX_DIFF_LINES;
+
+  // Compute line-by-line diff (unless file is too large)
+  const lineDiffs = skipDetailedDiff ? [] : computeLineDiff(originalLines, newLines);
 
   // Count statistics
   let additions = 0;
   let deletions = 0;
   let changes = 0;
 
-  // Detect changed lines (adjacent add/remove pairs)
-  for (let i = 0; i < lineDiffs.length; i++) {
-    const line = lineDiffs[i];
-    if (line.type === 'added') {
-      additions++;
-    } else if (line.type === 'removed') {
-      deletions++;
+  if (skipDetailedDiff) {
+    // For large files, estimate changes by comparing total lines
+    // This is a rough estimate but avoids O(N*M) memory
+    additions = Math.max(0, newLines.length - originalLines.length);
+    deletions = Math.max(0, originalLines.length - newLines.length);
+    changes = Math.min(originalLines.length, newLines.length);
+  } else {
+    // Detect changed lines (adjacent add/remove pairs)
+    for (let i = 0; i < lineDiffs.length; i++) {
+      const line = lineDiffs[i];
+      if (line.type === 'added') {
+        additions++;
+      } else if (line.type === 'removed') {
+        deletions++;
+      }
     }
+
+    // Calculate changes (min of additions and deletions, representing replaced lines)
+    // This is a simplified heuristic
+    changes = Math.min(additions, deletions);
   }
 
-  // Calculate changes (min of additions and deletions, representing replaced lines)
-  // This is a simplified heuristic
-  changes = Math.min(additions, deletions);
-
-  // Group into hunks
-  const hunks = groupIntoHunks(lineDiffs);
+  // Group into hunks (empty for large files)
+  const hunks = skipDetailedDiff ? [] : groupIntoHunks(lineDiffs);
 
   return {
     additions,

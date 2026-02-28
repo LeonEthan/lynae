@@ -31,18 +31,66 @@ export class PathValidationError extends Error {
 }
 
 /**
- * Normalizes a path and resolves any symlinks
+ * Normalizes a path and resolves any symlinks.
+ * Returns normalized path if realpath fails (e.g., file doesn't exist).
  */
-async function resolveRealPath(inputPath: string): Promise<string | null> {
+async function resolveRealPath(inputPath: string): Promise<string> {
   try {
-    // Check if path exists first
-    await fs.promises.access(inputPath);
-    // Resolve real path (follows symlinks)
+    // Resolve real path (follows symlinks). This will fail if path doesn't exist.
     return await fs.promises.realpath(inputPath);
   } catch {
     // Path doesn't exist or can't be accessed, return normalized path
     return path.normalize(inputPath);
   }
+}
+
+/**
+ * Performs basic validation checks on the requested path.
+ * Returns a failure result if validation fails, null otherwise.
+ */
+function performBasicValidation(
+  requestedPath: string,
+  normalizedPath: string
+): PathValidationFailure | null {
+  // Handle empty path
+  if (!requestedPath || requestedPath.trim() === '') {
+    return { valid: false, reason: 'Path cannot be empty' };
+  }
+
+  // Check for null bytes (path injection attempt)
+  if (normalizedPath.includes('\0')) {
+    return { valid: false, reason: 'Path contains null bytes' };
+  }
+
+  // Check for tilde expansion attempt (security: prevent home directory access)
+  if (requestedPath.startsWith('~')) {
+    return { valid: false, reason: 'Path contains tilde expansion' };
+  }
+
+  return null;
+}
+
+/**
+ * Checks if a resolved path is within the workspace boundary.
+ */
+function isPathWithinWorkspace(
+  resolvedPath: string,
+  workspaceRoot: string
+): boolean {
+  // Ensure the resolved path starts with workspace root
+  // We add path.sep to ensure we don't match partial directory names
+  const workspaceRootWithSep = workspaceRoot.endsWith(path.sep)
+    ? workspaceRoot
+    : workspaceRoot + path.sep;
+
+  const resolvedPathWithSep = resolvedPath.endsWith(path.sep)
+    ? resolvedPath
+    : resolvedPath + path.sep;
+
+  // Exact match with workspace root is allowed
+  const isExactWorkspaceRoot = resolvedPath === workspaceRoot;
+
+  return isExactWorkspaceRoot || resolvedPathWithSep.startsWith(workspaceRootWithSep);
 }
 
 /**
@@ -63,55 +111,23 @@ export async function validatePath(
   workspaceRoot: string
 ): Promise<PathValidationResult> {
   // Ensure workspaceRoot is absolute and resolved (including symlinks)
-  const normalizedWorkspaceRoot = await resolveRealPath(path.resolve(workspaceRoot)) ?? path.resolve(workspaceRoot);
-
-  // Handle empty path
-  if (!requestedPath || requestedPath.trim() === '') {
-    return { valid: false, reason: 'Path cannot be empty' };
-  }
+  const normalizedWorkspaceRoot = await resolveRealPath(path.resolve(workspaceRoot));
 
   // Resolve the requested path to an absolute path
-  // If path is absolute, path.resolve returns it as-is (normalized)
-  // If path is relative, it's resolved against workspaceRoot
   const absolutePath = path.resolve(normalizedWorkspaceRoot, requestedPath);
-
-  // Normalize the path to handle .. and . segments
   const normalizedPath = path.normalize(absolutePath);
 
-  // Check for null bytes (path injection attempt)
-  if (normalizedPath.includes('\0')) {
-    return { valid: false, reason: 'Path contains null bytes' };
-  }
-
-  // Check for tilde expansion attempt (security: prevent home directory access)
-  if (requestedPath.startsWith('~')) {
-    return { valid: false, reason: 'Path contains tilde expansion' };
+  // Perform basic validation checks
+  const basicValidation = performBasicValidation(requestedPath, normalizedPath);
+  if (basicValidation) {
+    return basicValidation;
   }
 
   // Resolve symlinks if the path exists
   const resolvedPath = await resolveRealPath(normalizedPath);
-  if (!resolvedPath) {
-    return { valid: false, reason: 'Path cannot be accessed' };
-  }
 
-  // Ensure the resolved path starts with workspace root
-  // We add path.sep to ensure we don't match partial directory names
-  const workspaceRootWithSep = normalizedWorkspaceRoot.endsWith(path.sep)
-    ? normalizedWorkspaceRoot
-    : normalizedWorkspaceRoot + path.sep;
-
-  const resolvedPathWithSep = resolvedPath.endsWith(path.sep)
-    ? resolvedPath
-    : resolvedPath + path.sep;
-
-  // Exact match with workspace root is allowed
-  const isExactWorkspaceRoot = resolvedPath === normalizedWorkspaceRoot;
-
-  // Check if path is within workspace
-  const isWithinWorkspace =
-    isExactWorkspaceRoot || resolvedPathWithSep.startsWith(workspaceRootWithSep);
-
-  if (!isWithinWorkspace) {
+  // Check workspace boundary
+  if (!isPathWithinWorkspace(resolvedPath, normalizedWorkspaceRoot)) {
     return {
       valid: false,
       reason: `Path "${requestedPath}" is outside workspace boundary`,
@@ -131,47 +147,21 @@ export function validatePathSync(
   // Ensure workspaceRoot is absolute and normalized
   const normalizedWorkspaceRoot = path.resolve(workspaceRoot);
 
-  // Handle empty path
-  if (!requestedPath || requestedPath.trim() === '') {
-    return { valid: false, reason: 'Path cannot be empty' };
-  }
-
   // Resolve the requested path to an absolute path
   const absolutePath = path.resolve(normalizedWorkspaceRoot, requestedPath);
-
-  // Normalize the path to handle .. and . segments
   const normalizedPath = path.normalize(absolutePath);
 
-  // Check for null bytes (path injection attempt)
-  if (normalizedPath.includes('\0')) {
-    return { valid: false, reason: 'Path contains null bytes' };
-  }
-
-  // Check for tilde expansion attempt (security: prevent home directory access)
-  if (requestedPath.startsWith('~')) {
-    return { valid: false, reason: 'Path contains tilde expansion' };
+  // Perform basic validation checks
+  const basicValidation = performBasicValidation(requestedPath, normalizedPath);
+  if (basicValidation) {
+    return basicValidation;
   }
 
   // For sync version, we can't resolve symlinks, so we just use normalized path
   // This is a limitation - the async version is preferred for security
 
-  // Ensure the resolved path starts with workspace root
-  const workspaceRootWithSep = normalizedWorkspaceRoot.endsWith(path.sep)
-    ? normalizedWorkspaceRoot
-    : normalizedWorkspaceRoot + path.sep;
-
-  const normalizedPathWithSep = normalizedPath.endsWith(path.sep)
-    ? normalizedPath
-    : normalizedPath + path.sep;
-
-  // Exact match with workspace root is allowed
-  const isExactWorkspaceRoot = normalizedPath === normalizedWorkspaceRoot;
-
-  // Check if path is within workspace
-  const isWithinWorkspace =
-    isExactWorkspaceRoot || normalizedPathWithSep.startsWith(workspaceRootWithSep);
-
-  if (!isWithinWorkspace) {
+  // Check workspace boundary
+  if (!isPathWithinWorkspace(normalizedPath, normalizedWorkspaceRoot)) {
     return {
       valid: false,
       reason: `Path "${requestedPath}" is outside workspace boundary`,
