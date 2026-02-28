@@ -345,16 +345,38 @@ export function parseCommand(command: string): {
 /**
  * Check for shell injection attempts
  * Returns null if safe, or a reason string if potentially dangerous
+ *
+ * SECURITY NOTE: This uses pattern matching which can be bypassed.
+ * This is defense-in-depth; the primary security is the allowlist.
  */
 export function detectShellInjection(command: string): string | null {
   // Check for common injection patterns
+  // Patterns use \s* to catch variations with/without whitespace
   const dangerousPatterns = [
+    // rm -rf / patterns (various forms)
     { pattern: /;\s*rm\s+-rf\s+\//, reason: 'Dangerous rm -rf / pattern detected' },
-    { pattern: /curl\s+.*\|\s*sh/, reason: 'Piping curl to shell is dangerous' },
-    { pattern: /wget\s+.*\|\s*sh/, reason: 'Piping wget to shell is dangerous' },
-    { pattern: /:\s*\(\s*\)\s*\{[^}]*\|[^}]*&[^}]*\}[^;]*;/, reason: 'Fork bomb detected' },
+    { pattern: /&&\s*rm\s+-rf\s+\//, reason: 'Dangerous rm -rf / pattern detected' },
+    { pattern: /\|\s*rm\s+-rf\s+\//, reason: 'Dangerous rm -rf / pattern detected' },
+
+    // Piping curl/wget to shell (various whitespace patterns)
+    { pattern: /curl\s+[^|]*\|\s*sh/, reason: 'Piping curl to shell is dangerous' },
+    { pattern: /curl\s+[^|]*\|\s*bash/, reason: 'Piping curl to bash is dangerous' },
+    { pattern: /wget\s+[^|]*\|\s*sh/, reason: 'Piping wget to shell is dangerous' },
+    { pattern: /wget\s+[^|]*\|\s*bash/, reason: 'Piping wget to bash is dangerous' },
+
+    // Command substitution with dangerous commands
     { pattern: /\$\(\s*rm\s+-rf/, reason: 'Command substitution with rm detected' },
     { pattern: /`rm\s+-rf/, reason: 'Backtick substitution with rm detected' },
+    { pattern: /\$\(\s*curl\s+.*\|\s*sh/, reason: 'Command substitution with curl|sh detected' },
+    { pattern: /`curl\s+.*\|\s*sh/, reason: 'Backtick substitution with curl|sh detected' },
+
+    // Fork bomb and other denial of service patterns
+    { pattern: /:\s*\(\s*\)\s*\{[^}]*\|[^}]*&[^}]*\}[^;]*;/, reason: 'Fork bomb detected' },
+    { pattern: /:\(\):\{:\|:\}&/, reason: 'Fork bomb detected' },
+
+    // Suspicious eval/exec patterns
+    { pattern: /eval\s*\$\(/, reason: 'Eval with command substitution detected' },
+    { pattern: /eval\s*`/, reason: 'Eval with backtick substitution detected' },
   ];
 
   for (const { pattern, reason } of dangerousPatterns) {

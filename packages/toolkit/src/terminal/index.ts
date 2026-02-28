@@ -30,6 +30,54 @@ const TERMINAL_CONSTANTS = {
   previewOutputLimit: 2000, // 2KB for status preview
 } as const;
 
+// Patterns that may indicate sensitive data in commands
+const SENSITIVE_PATTERNS = [
+  // API keys, tokens, passwords
+  { pattern: /(\b(?:api[_-]?key|apikey|token|password|passwd|pwd|secret|auth)\s*[=:]\s*)\S+/gi, replacement: '$1[REDACTED]' },
+  // URL credentials (user:pass@host)
+  { pattern: /(https?:\/\/)[^:@\s]+:[^@\s]+@/gi, replacement: '$1[REDACTED]@[REDACTED]@' },
+  // Bearer tokens
+  { pattern: /(\b[Bb]earer\s+)\S+/g, replacement: '$1[REDACTED]' },
+  // Authorization headers
+  { pattern: /([Aa]uthorization:\s*)\S+/g, replacement: '$1[REDACTED]' },
+];
+
+/**
+ * Mask sensitive data in command strings for safe logging
+ */
+function maskSensitiveData(input: string): string {
+  let masked = input;
+  for (const { pattern, replacement } of SENSITIVE_PATTERNS) {
+    masked = masked.replace(pattern, replacement);
+  }
+  return masked;
+}
+
+/**
+ * Recursively mask sensitive data in an object for safe logging
+ */
+function maskSensitiveDataInObject(obj: unknown): unknown {
+  if (typeof obj === 'string') {
+    return maskSensitiveData(obj);
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(maskSensitiveDataInObject);
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const masked: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      // Also mask keys that look like they might contain secrets
+      if (/password|secret|token|key|auth|credential/i.test(key) && typeof value === 'string') {
+        masked[key] = '[REDACTED]';
+      } else {
+        masked[key] = maskSensitiveDataInObject(value);
+      }
+    }
+    return masked;
+  }
+  return obj;
+}
+
 // Terminal session manager instance
 const sessionManager = getGlobalSessionManager({
   maxConcurrency: TERMINAL_CONSTANTS.maxConcurrency,
@@ -143,6 +191,7 @@ async function checkPermission(
 
 /**
  * Log tool execution to repository
+ * Sensitive data in input/output is masked before logging
  */
 async function logExecution(
   repo: ToolExecutionRepository | undefined,
@@ -160,14 +209,19 @@ async function logExecution(
 
   try {
     const now = new Date();
+    // Mask sensitive data before logging
+    const maskedInput = maskSensitiveDataInObject(data.input);
+    const maskedOutput = data.output ? maskSensitiveDataInObject(data.output) : undefined;
+    const maskedError = data.error ? maskSensitiveData(data.error) : undefined;
+
     await repo.create({
       id: data.id,
       sessionId: data.sessionId,
       toolName: data.toolName,
-      input: JSON.stringify(data.input),
-      output: data.output ? JSON.stringify(data.output) : undefined,
+      input: JSON.stringify(maskedInput),
+      output: maskedOutput ? JSON.stringify(maskedOutput) : undefined,
       status: data.status,
-      error: data.error,
+      error: maskedError,
       createdAt: now,
       updatedAt: now,
     });
@@ -178,6 +232,7 @@ async function logExecution(
 
 /**
  * Update tool execution log
+ * Sensitive data in output/error is masked before logging
  */
 async function updateExecutionLog(
   repo: ToolExecutionRepository | undefined,
@@ -191,9 +246,13 @@ async function updateExecutionLog(
   if (!repo) return;
 
   try {
+    // Mask sensitive data before logging
+    const maskedOutput = data.output ? JSON.stringify(maskSensitiveDataInObject(data.output)) : undefined;
+    const maskedError = data.error ? maskSensitiveData(data.error) : undefined;
+
     await repo.updateStatus(id, data.status, {
-      output: data.output ? JSON.stringify(data.output) : undefined,
-      error: data.error,
+      output: maskedOutput,
+      error: maskedError,
     });
   } catch (error) {
     console.error('Failed to update tool execution log:', error);

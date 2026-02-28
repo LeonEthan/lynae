@@ -1,5 +1,8 @@
 // Terminal Session Manager - Manages active PTY sessions with concurrency limits
 
+// NOTE: node-pty v1.1.0-beta34 is used because it includes critical fixes for
+// process cleanup and macOS compatibility not available in v0.x stable.
+// Track https://github.com/microsoft/node-pty/releases for stable v1.1.0+.
 import { spawn, IPty } from 'node-pty';
 import { EventEmitter } from 'node:events';
 
@@ -241,14 +244,26 @@ export class TerminalSessionManager extends EventEmitter {
   }
 
   /**
-   * Gracefully kill a PTY process with SIGTERM, then SIGKILL after grace period
+   * Gracefully kill a PTY process with SIGTERM, then SIGKILL after grace period.
+   * Also attempts to kill the entire process group to catch spawned children.
    */
   private gracefulKill(pty: IPty): void {
+    const pid = pty.pid;
+
+    // Kill the PTY process first
     try {
       pty.kill('SIGTERM');
     } catch {
       // Process may already be dead
       return;
+    }
+
+    // Also signal the process group (negative PID) to catch spawned children
+    // This is best-effort; may fail if process group doesn't exist
+    try {
+      process.kill(-pid, 'SIGTERM');
+    } catch {
+      // Process group may not exist or we may not have permission
     }
 
     // Give it time to terminate gracefully, then force kill
@@ -257,6 +272,13 @@ export class TerminalSessionManager extends EventEmitter {
         pty.kill('SIGKILL');
       } catch {
         // Process may already be dead
+      }
+
+      // Force kill process group as well
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        // Process group may already be dead
       }
     }, KILL_GRACE_PERIOD_MS);
   }
