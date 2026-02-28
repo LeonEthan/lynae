@@ -2,6 +2,7 @@
 // PR-07, PR-08, PR-09 will implement full tool chains
 
 import { FileTools } from './file/index.js';
+import { TerminalTools } from './terminal/index.js';
 
 export interface Tool {
   name: string;
@@ -63,6 +64,13 @@ export class Toolkit {
  */
 export function registerFileTools(toolkit: Toolkit): void {
   toolkit.registerAll(FileTools);
+}
+
+/**
+ * Registers all terminal tools with the toolkit
+ */
+export function registerTerminalTools(toolkit: Toolkit): void {
+  toolkit.registerAll(TerminalTools);
 }
 
 // Export file tools and utilities
