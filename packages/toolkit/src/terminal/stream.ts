@@ -8,6 +8,7 @@ export interface TerminalOutputEvent {
   data?: string;
   exitCode?: number;
   message?: string;
+  timeoutMs?: number; // Present for timeout events
 }
 
 export type OutputHandler = (event: TerminalOutputEvent) => void;
@@ -206,6 +207,7 @@ export function createOutputHandler(
 export async function collectOutput(
   sessionManager: {
     on: (event: string, handler: (event: TerminalOutputEvent) => void) => void;
+    off: (event: string, handler: (event: TerminalOutputEvent) => void) => void;
   },
   sessionId: string,
   options?: {
@@ -224,10 +226,16 @@ export async function collectOutput(
     let completed = false;
     let truncated = false;
 
+    const cleanup = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      sessionManager.off('output', onOutput);
+    };
+
     const timeoutId = options?.timeoutMs
       ? setTimeout(() => {
           if (!completed) {
             completed = true;
+            cleanup();
             resolve({
               output: chunks.join(''),
               exitCode,
@@ -238,6 +246,9 @@ export async function collectOutput(
         }, options.timeoutMs)
       : null;
 
+    // Track running size for O(1) updates instead of O(n) reduction
+    let currentSize = 0;
+
     const onOutput = (event: TerminalOutputEvent) => {
       if (event.sessionId !== sessionId) return;
 
@@ -245,17 +256,15 @@ export async function collectOutput(
         case 'data':
           if (event.data) {
             chunks.push(event.data);
+            currentSize += event.data.length;
 
-            // Check max size
-            const currentSize = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+            // Check max size and remove oldest chunks if exceeded
             if (options?.maxSize && currentSize > options.maxSize) {
               truncated = true;
               // Remove oldest chunks to stay under limit
-              while (
-                chunks.length > 1 &&
-                chunks.reduce((sum, chunk) => sum + chunk.length, 0) > options.maxSize
-              ) {
-                chunks.shift();
+              while (chunks.length > 1 && currentSize > options.maxSize) {
+                const removed = chunks.shift()!;
+                currentSize -= removed.length;
               }
             }
           }
@@ -265,7 +274,7 @@ export async function collectOutput(
           exitCode = event.exitCode;
           if (!completed) {
             completed = true;
-            if (timeoutId) clearTimeout(timeoutId);
+            cleanup();
             resolve({
               output: chunks.join(''),
               exitCode,
@@ -278,7 +287,7 @@ export async function collectOutput(
         case 'error':
           if (!completed) {
             completed = true;
-            if (timeoutId) clearTimeout(timeoutId);
+            cleanup();
             reject(new Error(event.message || 'Unknown error'));
           }
           break;
@@ -286,7 +295,7 @@ export async function collectOutput(
         case 'timeout':
           if (!completed) {
             completed = true;
-            if (timeoutId) clearTimeout(timeoutId);
+            cleanup();
             resolve({
               output: chunks.join(''),
               exitCode,

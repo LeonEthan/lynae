@@ -10,6 +10,13 @@ const OUTPUT_BUFFER_MAX_SIZE = 1024 * 1024; // 1MB
 const KILL_GRACE_PERIOD_MS = 5000; // 5 seconds between SIGTERM and SIGKILL
 const MIN_TIMEOUT_MS = 1000; // Minimum allowed timeout
 
+// Internal buffer tracking for efficient output accumulation
+interface OutputBufferState {
+  chunks: string[];
+  size: number;
+  truncated: boolean;
+}
+
 export interface TerminalSession {
   id: string;
   pty: IPty;
@@ -22,10 +29,8 @@ export interface TerminalSession {
   exitCode?: number;
   outputBuffer: string;
   env: Record<string, string>;
-  // Internal: output buffer chunks for efficient accumulation
-  _outputChunks?: string[];
-  _outputSize?: number;
-  _outputTruncated?: boolean;
+  // Internal: output buffer chunks for efficient accumulation (initialized at creation)
+  _outputBufferState: OutputBufferState;
 }
 
 export interface SessionManagerConfig {
@@ -46,6 +51,7 @@ export interface SessionOutputEvent {
   data?: string;
   exitCode?: number;
   message?: string;
+  timeoutMs?: number; // Present for timeout events
 }
 
 export class TerminalSessionManager extends EventEmitter {
@@ -109,13 +115,21 @@ export class TerminalSessionManager extends EventEmitter {
     // Spawn the PTY
     // Use the user's shell by default, passing the command with -c flag
     const shell = process.env.SHELL || '/bin/bash';
-    const pty = spawn(shell, ['-c', command], {
-      name: 'xterm-color',
-      cwd,
-      env,
-      cols: 80,
-      rows: 30,
-    });
+    let pty: IPty;
+    try {
+      pty = spawn(shell, ['-c', command], {
+        name: 'xterm-color',
+        cwd,
+        env,
+        cols: 80,
+        rows: 30,
+      });
+    } catch (spawnError) {
+      throw new Error(
+        `Failed to spawn PTY with shell "${shell}": ${spawnError instanceof Error ? spawnError.message : String(spawnError)}. ` +
+        'Ensure the shell is installed and available in the system PATH.'
+      );
+    }
 
     const session: TerminalSession = {
       id: sessionId,
@@ -127,6 +141,11 @@ export class TerminalSessionManager extends EventEmitter {
       status: 'running',
       outputBuffer: '',
       env: options?.env ?? {},
+      _outputBufferState: {
+        chunks: [],
+        size: 0,
+        truncated: false,
+      },
     };
 
     // Set up timeout
@@ -136,22 +155,21 @@ export class TerminalSessionManager extends EventEmitter {
 
     // Set up event handlers
     // Use an array of chunks for O(1) append, periodically joined for memory efficiency
-    const TRUNCATION_MESSAGE = '\n[...output truncated due to size limit...]\n';
-    session._outputChunks = [];
-    session._outputSize = 0;
-    session._outputTruncated = false;
+    const TRUNCATION_MESSAGE = '\n[...output truncated at 1MB size limit...]\n';
 
     const flushBuffer = () => {
-      const chunks = session._outputChunks!;
-      if (chunks.length > 1) {
-        session.outputBuffer = chunks.join('');
-        chunks.length = 0;
-        chunks.push(session.outputBuffer);
+      const state = session._outputBufferState;
+      if (state.chunks.length > 1) {
+        session.outputBuffer = state.chunks.join('');
+        state.chunks.length = 0;
+        state.chunks.push(session.outputBuffer);
       }
     };
 
     pty.onData((data) => {
-      if (session._outputTruncated) {
+      const state = session._outputBufferState;
+
+      if (state.truncated) {
         // Still emit data for streaming, but don't accumulate
         this.emit('output', {
           type: 'data',
@@ -162,24 +180,24 @@ export class TerminalSessionManager extends EventEmitter {
       }
 
       // Check if adding this chunk would exceed the limit
-      const newSize = session._outputSize! + data.length;
+      const newSize = state.size + data.length;
 
       if (newSize > OUTPUT_BUFFER_MAX_SIZE) {
         // Calculate how much of the new data we can keep
-        const keepSize = Math.max(0, OUTPUT_BUFFER_MAX_SIZE - session._outputSize!);
+        const keepSize = Math.max(0, OUTPUT_BUFFER_MAX_SIZE - state.size);
         if (keepSize > 0) {
-          session._outputChunks!.push(data.slice(0, keepSize));
-          session._outputSize! += keepSize;
+          state.chunks.push(data.slice(0, keepSize));
+          state.size += keepSize;
         }
         // Mark as truncated
-        session._outputChunks!.push(TRUNCATION_MESSAGE);
-        session._outputTruncated = true;
+        state.chunks.push(TRUNCATION_MESSAGE);
+        state.truncated = true;
         flushBuffer();
       } else {
-        session._outputChunks!.push(data);
-        session._outputSize = newSize;
+        state.chunks.push(data);
+        state.size = newSize;
         // Periodically flush to prevent excessive array growth (every 100 chunks)
-        if (session._outputChunks!.length > 100) {
+        if (state.chunks.length > 100) {
           flushBuffer();
         }
       }
@@ -294,6 +312,7 @@ export class TerminalSessionManager extends EventEmitter {
       type: 'timeout',
       sessionId,
       message: `Command timed out after ${session.timeoutMs}ms`,
+      timeoutMs: session.timeoutMs,
     } as SessionOutputEvent);
 
     this.emit('sessionEnded', {
@@ -319,8 +338,9 @@ export class TerminalSessionManager extends EventEmitter {
     }
 
     // Flush any remaining output chunks to the buffer
-    if (session._outputChunks && session._outputChunks.length > 1) {
-      session.outputBuffer = session._outputChunks.join('');
+    const state = session._outputBufferState;
+    if (state.chunks.length > 1) {
+      session.outputBuffer = state.chunks.join('');
     }
 
     // Only update status if still running (not already cancelled/timed out)
@@ -357,6 +377,10 @@ export class TerminalSessionManager extends EventEmitter {
     if (session.timeoutId) {
       clearTimeout(session.timeoutId);
     }
+
+    // Clear buffer state to release memory immediately
+    session._outputBufferState.chunks.length = 0;
+    session._outputBufferState.size = 0;
 
     this.sessions.delete(sessionId);
     return true;

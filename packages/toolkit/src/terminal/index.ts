@@ -89,6 +89,22 @@ export interface TerminalListOutput {
 }
 
 /**
+ * Type guard to check if a value is a valid TerminalExecuteOutput
+ */
+export function isTerminalExecuteOutput(result: unknown): result is TerminalExecuteOutput {
+  return (
+    result !== null &&
+    typeof result === 'object' &&
+    'sessionId' in result &&
+    typeof (result as TerminalExecuteOutput).sessionId === 'string' &&
+    'command' in result &&
+    typeof (result as TerminalExecuteOutput).command === 'string' &&
+    'status' in result &&
+    ['running', 'denied', 'error'].includes((result as TerminalExecuteOutput).status)
+  );
+}
+
+/**
  * Check permission with PolicyEngine
  */
 async function checkPermission(
@@ -111,8 +127,10 @@ async function checkPermission(
   }
 
   if (result.decision === 'require_approval') {
+    // TODO(PR-12): Implement approval queue system for commands requiring approval
     // For now, deny if approval system not fully implemented
     // In a full implementation, this would queue for approval
+    // See: https://github.com/LeonEthan/lynae/issues/12
     return {
       allowed: false,
       result,
@@ -323,22 +341,11 @@ export const TerminalExecuteTool: Tool = {
     }
 
     try {
-      // Step 5: Create PTY session
-      const session = await sessionManager.createSession(
-        sessionId,
-        command,
-        cwdValidation.resolvedPath!,
-        {
-          timeoutMs: timeout,
-          env,
-        }
-      );
-
-      // Create output handler for this session
+      // Create output handler for this session (before session creation to avoid race)
       const outputHandler = new StreamingOutputHandler();
       outputHandlers.set(sessionId, outputHandler);
 
-      // Set up event forwarding
+      // Set up event forwarding (before session creation to capture all output)
       const outputListener = (event: TerminalOutputEvent) => {
         if (event.sessionId !== sessionId) return;
 
@@ -355,15 +362,27 @@ export const TerminalExecuteTool: Tool = {
             if (event.message) outputHandler.onError(sessionId, new Error(event.message));
             break;
           case 'timeout':
-            outputHandler.onTimeout(sessionId, session.timeoutMs);
+            outputHandler.onTimeout(sessionId, event.timeoutMs ?? TERMINAL_CONSTANTS.defaultTimeoutMs);
             handleSessionEnd(sessionId, -1, context.toolExecutionRepo, 'timed_out');
             break;
         }
       };
 
-      // Store listener reference for cleanup
+      // Register listener BEFORE creating session to prevent race condition
+      // where early output events are missed
       outputListeners.set(sessionId, outputListener);
       sessionManager.on('output', outputListener);
+
+      // Step 5: Create PTY session (listener is already registered)
+      await sessionManager.createSession(
+        sessionId,
+        command,
+        cwdValidation.resolvedPath!,
+        {
+          timeoutMs: timeout,
+          env,
+        }
+      );
 
       // Log the running execution
       await logExecution(context.toolExecutionRepo, {

@@ -10,6 +10,7 @@ import {
   DEFAULT_ALLOWLIST,
 } from '../security.js';
 import { StreamingOutputHandler, collectOutput } from '../stream.js';
+import { isTerminalExecuteOutput } from '../index.js';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -662,7 +663,8 @@ ptyDescribe('Terminal tools integration', () => {
         { workspaceRoot: process.cwd(), sessionId: 'test', taskId: 'task1' }
       );
 
-      if (result && typeof result === 'object' && 'sessionId' in result) {
+      expect(isTerminalExecuteOutput(result)).toBe(true);
+      if (isTerminalExecuteOutput(result)) {
         expect(result.sessionId).toBeDefined();
         expect(result.status).toBe('running');
       }
@@ -678,7 +680,8 @@ ptyDescribe('Terminal tools integration', () => {
         { workspaceRoot: process.cwd(), sessionId: 'test', taskId: 'task1' }
       );
 
-      if (result && typeof result === 'object' && 'status' in result) {
+      expect(isTerminalExecuteOutput(result)).toBe(true);
+      if (isTerminalExecuteOutput(result)) {
         expect(result.status).toBe('denied');
       }
     });
@@ -692,7 +695,8 @@ ptyDescribe('Terminal tools integration', () => {
         { workspaceRoot: process.cwd(), sessionId: 'test', taskId: 'task1' }
       );
 
-      if (result && typeof result === 'object' && 'status' in result) {
+      expect(isTerminalExecuteOutput(result)).toBe(true);
+      if (isTerminalExecuteOutput(result)) {
         expect(result.status).toBe('denied');
       }
     });
