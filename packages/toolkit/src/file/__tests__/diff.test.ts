@@ -287,5 +287,19 @@ line5`;
       expect(diff.additions).toBe(100);
       expect(diff.deletions).toBe(100);
     });
+
+    it('should report zero changes for large identical files', () => {
+      // Create large identical files (>5000 lines triggers fast path)
+      const lines = Array(6001).fill('same content');
+      const content = lines.join('\n');
+
+      const diff = generateDiff(content, content);
+
+      // For identical files, even large ones, changes should be 0
+      expect(diff.additions).toBe(0);
+      expect(diff.deletions).toBe(0);
+      expect(diff.changes).toBe(0);
+      expect(diff.hunks).toHaveLength(0);
+    });
   });
 });

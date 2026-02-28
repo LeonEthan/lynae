@@ -252,11 +252,19 @@ export function generateDiff(
   let changes = 0;
 
   if (skipDetailedDiff) {
-    // For large files, estimate changes by comparing total lines
-    // This is a rough estimate but avoids O(N*M) memory
-    additions = Math.max(0, newLines.length - originalLines.length);
-    deletions = Math.max(0, originalLines.length - newLines.length);
-    changes = Math.min(originalLines.length, newLines.length);
+    // For large files, check if identical first
+    if (originalContent === newContent) {
+      // Files are identical - no changes
+      additions = 0;
+      deletions = 0;
+      changes = 0;
+    } else {
+      // Files differ but we can't compute exact changes without full diff
+      // Report line count differences only, set changes to 0 (unknown)
+      additions = Math.max(0, newLines.length - originalLines.length);
+      deletions = Math.max(0, originalLines.length - newLines.length);
+      changes = 0; // Unknown for large files without full diff
+    }
   } else {
     // Detect changed lines (adjacent add/remove pairs)
     for (let i = 0; i < lineDiffs.length; i++) {

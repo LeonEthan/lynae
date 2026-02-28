@@ -330,4 +330,23 @@ describe('Path Validation with Real Filesystem', () => {
       await fs.promises.rm(outsideDir, { recursive: true, force: true });
     }
   });
+
+  it('should reject non-existent paths under symlinked parent directories that escape workspace', async () => {
+    // Create a directory outside workspace and symlink it inside
+    const outsideDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'outside-'));
+    const symlinkDir = path.join(tempDir, 'linkdir');
+
+    try {
+      await fs.promises.symlink(outsideDir, symlinkDir);
+
+      // Try to validate a non-existent file inside the symlinked directory
+      const result = await validatePath('linkdir/escaped.txt', tempDir);
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.reason).toContain('outside workspace');
+      }
+    } finally {
+      await fs.promises.rm(outsideDir, { recursive: true, force: true });
+    }
+  });
 });

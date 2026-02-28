@@ -32,15 +32,26 @@ export class PathValidationError extends Error {
 
 /**
  * Normalizes a path and resolves any symlinks.
- * Returns normalized path if realpath fails (e.g., file doesn't exist).
+ * For non-existent paths, resolves the parent directory to detect symlink escapes.
  */
 async function resolveRealPath(inputPath: string): Promise<string> {
   try {
     // Resolve real path (follows symlinks). This will fail if path doesn't exist.
     return await fs.promises.realpath(inputPath);
   } catch {
-    // Path doesn't exist or can't be accessed, return normalized path
-    return path.normalize(inputPath);
+    // Path doesn't exist - resolve the parent directory to check for symlink escapes
+    const parentDir = path.dirname(inputPath);
+    const baseName = path.basename(inputPath);
+
+    try {
+      // Resolve the parent directory (follows symlinks)
+      const resolvedParent = await fs.promises.realpath(parentDir);
+      // Reconstruct the full path with resolved parent
+      return path.join(resolvedParent, baseName);
+    } catch {
+      // Parent also doesn't exist or can't be accessed, return normalized path
+      return path.normalize(inputPath);
+    }
   }
 }
 

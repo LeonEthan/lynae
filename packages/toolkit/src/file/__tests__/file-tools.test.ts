@@ -397,6 +397,18 @@ describe('File Tools Integration', () => {
       const content = await fs.promises.readFile(testFile, 'utf-8');
       expect(content).toBe('price: $150.00');
     });
+
+    it('should reject empty search pattern', async () => {
+      const testFile = path.join(tempDir, 'test.txt');
+      await fs.promises.writeFile(testFile, 'abc', 'utf-8');
+
+      await expect(
+        FileReplaceTool.execute(
+          { path: 'test.txt', search: '', replace: 'X' },
+          context
+        )
+      ).rejects.toThrow('INVALID_INPUT');
+    });
   });
 
   describe('FileListTool', () => {

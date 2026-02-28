@@ -423,6 +423,11 @@ export const FileReplaceTool: Tool = {
       limit = 1,
     } = input as FileReplaceInput;
 
+    // Validate search is not empty (empty search would match at every position)
+    if (search === '') {
+      throw new Error('INVALID_INPUT: search pattern cannot be empty');
+    }
+
     // Validate path is within workspace
     const validation = await validatePath(requestedPath, context.workspaceRoot);
     if (!validation.valid) {
