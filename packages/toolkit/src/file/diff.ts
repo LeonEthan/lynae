@@ -29,7 +29,8 @@ export interface DiffLine {
 export interface DiffSummary {
   additions: number; // Lines added
   deletions: number; // Lines removed
-  changes: number; // Lines changed (modified)
+  changes: number; // Lines changed (modified) - always non-negative
+  hasChanges: boolean; // Whether the file was modified (true even if change count unknown)
   totalLines: number; // Total lines in new file
   hunks: DiffHunk[]; // Detailed hunks for preview
 }
@@ -251,6 +252,8 @@ export function generateDiff(
   let deletions = 0;
   let changes = 0;
 
+  let hasChanges = false;
+
   if (skipDetailedDiff) {
     // For large files, check if identical first
     if (originalContent === newContent) {
@@ -258,15 +261,17 @@ export function generateDiff(
       additions = 0;
       deletions = 0;
       changes = 0;
+      hasChanges = false;
     } else {
       // Files differ but we can't compute exact changes without full diff
       // Report line count differences, and indicate that changes occurred
       additions = Math.max(0, newLines.length - originalLines.length);
       deletions = Math.max(0, originalLines.length - newLines.length);
-      // If net change is 0 but content differs, set changes to -1 to indicate
-      // "unknown but file was modified" rather than "no changes"
-      const netChange = additions + deletions;
-      changes = netChange === 0 ? -1 : Math.min(additions, deletions);
+      // Use min(additions, deletions) for changes, which represents replaced lines.
+      // If net change is 0 but content differs, changes is 0 but hasChanges is true
+      // to indicate the file was modified.
+      changes = Math.min(additions, deletions);
+      hasChanges = true;
     }
   } else {
     // Detect changed lines (adjacent add/remove pairs)
@@ -282,6 +287,7 @@ export function generateDiff(
     // Calculate changes (min of additions and deletions, representing replaced lines)
     // This is a simplified heuristic
     changes = Math.min(additions, deletions);
+    hasChanges = additions > 0 || deletions > 0;
   }
 
   // Group into hunks (empty for large files)
@@ -291,6 +297,7 @@ export function generateDiff(
     additions,
     deletions,
     changes,
+    hasChanges,
     totalLines: newLines.length,
     hunks,
   };
@@ -347,6 +354,7 @@ export function generateDiffStats(
     additions: full.additions,
     deletions: full.deletions,
     changes: full.changes,
+    hasChanges: full.hasChanges,
     totalLines: full.totalLines,
   };
 }

@@ -10,6 +10,7 @@ describe('Diff Generation', () => {
       expect(diff.additions).toBe(3);
       expect(diff.deletions).toBe(0);
       expect(diff.changes).toBe(0);
+      expect(diff.hasChanges).toBe(true);
       expect(diff.totalLines).toBe(3);
       expect(diff.hunks.length).toBeGreaterThan(0);
     });
@@ -21,6 +22,7 @@ describe('Diff Generation', () => {
       expect(diff.additions).toBe(0);
       expect(diff.deletions).toBe(3);
       expect(diff.changes).toBe(0);
+      expect(diff.hasChanges).toBe(true);
       expect(diff.totalLines).toBe(0);
     });
 
@@ -41,6 +43,7 @@ describe('Diff Generation', () => {
       expect(diff.additions).toBe(0);
       expect(diff.deletions).toBe(0);
       expect(diff.changes).toBe(0);
+      expect(diff.hasChanges).toBe(false);
       expect(diff.totalLines).toBe(3);
     });
 
@@ -299,6 +302,7 @@ line5`;
       expect(diff.additions).toBe(0);
       expect(diff.deletions).toBe(0);
       expect(diff.changes).toBe(0);
+      expect(diff.hasChanges).toBe(false);
       expect(diff.hunks).toHaveLength(0);
     });
 
@@ -314,8 +318,10 @@ line5`;
       // Line counts are equal, so no net additions/deletions
       expect(diff.additions).toBe(0);
       expect(diff.deletions).toBe(0);
-      // But changes should be -1 to indicate "modified but count unknown"
-      expect(diff.changes).toBe(-1);
+      // changes is 0 (no replacements detected from line counts alone)
+      // but hasChanges is true to indicate the file was modified
+      expect(diff.changes).toBe(0);
+      expect(diff.hasChanges).toBe(true);
       expect(diff.hunks).toHaveLength(0);
     });
   });
