@@ -260,10 +260,13 @@ export function generateDiff(
       changes = 0;
     } else {
       // Files differ but we can't compute exact changes without full diff
-      // Report line count differences only, set changes to 0 (unknown)
+      // Report line count differences, and indicate that changes occurred
       additions = Math.max(0, newLines.length - originalLines.length);
       deletions = Math.max(0, originalLines.length - newLines.length);
-      changes = 0; // Unknown for large files without full diff
+      // If net change is 0 but content differs, set changes to -1 to indicate
+      // "unknown but file was modified" rather than "no changes"
+      const netChange = additions + deletions;
+      changes = netChange === 0 ? -1 : Math.min(additions, deletions);
     }
   } else {
     // Detect changed lines (adjacent add/remove pairs)

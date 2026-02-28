@@ -301,5 +301,22 @@ line5`;
       expect(diff.changes).toBe(0);
       expect(diff.hunks).toHaveLength(0);
     });
+
+    it('should indicate modifications for large files with same line count but different content', () => {
+      // Create large files (>5000 lines) with same line count but different content
+      const originalLines = Array(6001).fill('line content');
+      const modifiedLines = Array(6001).fill('modified content');
+      const original = originalLines.join('\n');
+      const modified = modifiedLines.join('\n');
+
+      const diff = generateDiff(original, modified);
+
+      // Line counts are equal, so no net additions/deletions
+      expect(diff.additions).toBe(0);
+      expect(diff.deletions).toBe(0);
+      // But changes should be -1 to indicate "modified but count unknown"
+      expect(diff.changes).toBe(-1);
+      expect(diff.hunks).toHaveLength(0);
+    });
   });
 });

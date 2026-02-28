@@ -349,4 +349,24 @@ describe('Path Validation with Real Filesystem', () => {
       await fs.promises.rm(outsideDir, { recursive: true, force: true });
     }
   });
+
+  it('should reject deeply nested non-existent paths under symlinked parent directories', async () => {
+    // Create a directory outside workspace and symlink it inside
+    const outsideDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'outside-'));
+    const symlinkDir = path.join(tempDir, 'linkdir');
+
+    try {
+      await fs.promises.symlink(outsideDir, symlinkDir);
+
+      // Try to validate a deeply nested non-existent file inside the symlinked directory
+      // The parent directories (nested1/nested2) don't exist either
+      const result = await validatePath('linkdir/nested1/nested2/escaped.txt', tempDir);
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.reason).toContain('outside workspace');
+      }
+    } finally {
+      await fs.promises.rm(outsideDir, { recursive: true, force: true });
+    }
+  });
 });

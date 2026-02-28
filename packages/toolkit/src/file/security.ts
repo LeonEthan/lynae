@@ -32,26 +32,42 @@ export class PathValidationError extends Error {
 
 /**
  * Normalizes a path and resolves any symlinks.
- * For non-existent paths, resolves the parent directory to detect symlink escapes.
+ * For non-existent paths, recursively resolves parent directories to detect symlink escapes.
  */
 async function resolveRealPath(inputPath: string): Promise<string> {
   try {
     // Resolve real path (follows symlinks). This will fail if path doesn't exist.
     return await fs.promises.realpath(inputPath);
   } catch {
-    // Path doesn't exist - resolve the parent directory to check for symlink escapes
-    const parentDir = path.dirname(inputPath);
-    const baseName = path.basename(inputPath);
+    // Path doesn't exist - recursively resolve parent directories
+    // This handles nested non-existent paths under symlinked directories
+    return await resolveRealPathForNonExistent(inputPath);
+  }
+}
 
-    try {
-      // Resolve the parent directory (follows symlinks)
-      const resolvedParent = await fs.promises.realpath(parentDir);
-      // Reconstruct the full path with resolved parent
-      return path.join(resolvedParent, baseName);
-    } catch {
-      // Parent also doesn't exist or can't be accessed, return normalized path
-      return path.normalize(inputPath);
-    }
+/**
+ * Recursively resolves parent directories for non-existent paths.
+ * Walks up the directory tree until finding an existing directory,
+ * then reconstructs the path with resolved ancestors.
+ */
+async function resolveRealPathForNonExistent(inputPath: string): Promise<string> {
+  const parentDir = path.dirname(inputPath);
+  const baseName = path.basename(inputPath);
+
+  // Stop at root (dirname of root is root on Unix, or drive root on Windows)
+  if (parentDir === inputPath) {
+    return path.normalize(inputPath);
+  }
+
+  try {
+    // Try to resolve the parent directory
+    const resolvedParent = await fs.promises.realpath(parentDir);
+    // Parent exists and is resolved - reconstruct full path
+    return path.join(resolvedParent, baseName);
+  } catch {
+    // Parent also doesn't exist - recursively resolve its parent
+    const resolvedGrandparent = await resolveRealPathForNonExistent(parentDir);
+    return path.join(resolvedGrandparent, baseName);
   }
 }
 
