@@ -15,9 +15,16 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "clean": "node ../../scripts/clean.mjs dist"
   },
+  "dependencies": {
+    "fast-glob": "^3.3.2"
+  },
   "devDependencies": {
-    "typescript": "~5.7.3"
+    "@types/node": "^22.0.0",
+    "typescript": "~5.7.3",
+    "vitest": "^3.0.0"
   }
 }
